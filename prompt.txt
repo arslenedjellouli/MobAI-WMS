@@ -79,11 +79,57 @@ CREATE TABLE WAREHOUSES (
 CREATE TABLE FLOORS (
     id INT PRIMARY KEY AUTO_INCREMENT,
     warehouse_id INT NOT NULL,
-    level_number INT NOT NULL,
+    level_number INT NOT NULL CHECK (level_number >= 0 AND level_number <= 4),
+    floor_type ENUM('GROUND', 'STORAGE') NOT NULL,
     description VARCHAR(255),
+    matrix_rows INT UNSIGNED DEFAULT 10,
+    matrix_columns INT UNSIGNED DEFAULT 10,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE,
     UNIQUE KEY unique_floor_level (warehouse_id, level_number),
     INDEX idx_warehouse_floor (warehouse_id, level_number)
+) ENGINE=InnoDB;
+
+CREATE TABLE SECTIONS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    floor_id INT NOT NULL,
+    section_type ENUM('PICKING', 'ELEVATOR', 'MONTE_CHARGE_1', 'MONTE_CHARGE_2', 
+                      'VRAC', 'EXPEDITION_1', 'EXPEDITION_2', 'BUREAU', 
+                      'PALETTE_SLOTS', 'ROUTE_SLOTS') NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    start_row INT UNSIGNED NOT NULL,
+    end_row INT UNSIGNED NOT NULL,
+    start_column INT UNSIGNED NOT NULL,
+    end_column INT UNSIGNED NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (floor_id) REFERENCES FLOORS(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_floor_section_type (floor_id, section_type),
+    INDEX idx_floor_section (floor_id, section_type)
+) ENGINE=InnoDB;
+
+CREATE TABLE SLOTS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    floor_id INT NOT NULL,
+    section_id INT NOT NULL,
+    row INT UNSIGNED NOT NULL,
+    `column` INT UNSIGNED NOT NULL,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    is_storage BOOLEAN DEFAULT FALSE,
+    is_infrastructure BOOLEAN DEFAULT FALSE,
+    is_aisle BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (floor_id) REFERENCES FLOORS(id) ON DELETE CASCADE,
+    FOREIGN KEY (section_id) REFERENCES SECTIONS(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_floor_slot_position (floor_id, row, `column`),
+    INDEX idx_floor_slot (floor_id, row, `column`),
+    INDEX idx_section_slot (section_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE ZONES (
@@ -102,24 +148,34 @@ CREATE TABLE LOCATIONS (
     warehouse_id INT NOT NULL,
     floor_id INT NULL,
     zone_id INT NOT NULL,
+    slot_id INT NULL,
     code VARCHAR(50) UNIQUE NOT NULL,
+    aisle VARCHAR(20),
+    rack VARCHAR(20),
+    shelf VARCHAR(20),
+    position VARCHAR(20),
     x_coord DECIMAL(10, 2),
     y_coord DECIMAL(10, 2),
-    capacity INT NOT NULL DEFAULT 100,
-    current_capacity_used INT DEFAULT 0,
-    reserved_capacity INT DEFAULT 0,
+    capacity DECIMAL(10, 2) NOT NULL DEFAULT 1.3,
+    current_capacity_used DECIMAL(10, 2) DEFAULT 0,
+    reserved_capacity DECIMAL(10, 2) DEFAULT 0,
     status ENUM('FREE', 'ASSIGNED', 'OCCUPIED') DEFAULT 'FREE',
     is_active BOOLEAN DEFAULT TRUE,
+    is_pallet_position BOOLEAN DEFAULT TRUE,
+    max_pallets INT DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE,
     FOREIGN KEY (floor_id) REFERENCES FLOORS(id) ON DELETE SET NULL,
     FOREIGN KEY (zone_id) REFERENCES ZONES(id) ON DELETE CASCADE,
+    FOREIGN KEY (slot_id) REFERENCES SLOTS(id) ON DELETE SET NULL,
     CONSTRAINT check_capacity_valid CHECK (current_capacity_used + reserved_capacity <= capacity),
     CONSTRAINT check_capacity_positive CHECK (capacity >= 0),
     CONSTRAINT check_used_positive CHECK (current_capacity_used >= 0),
     CONSTRAINT check_reserved_positive CHECK (reserved_capacity >= 0),
     INDEX idx_location_code (code),
     INDEX idx_location_zone (zone_id),
+    INDEX idx_location_slot (slot_id),
     INDEX idx_location_coords (x_coord, y_coord),
     INDEX idx_location_active (is_active),
     INDEX idx_location_status (status)
@@ -815,6 +871,62 @@ CRITICAL FLOW RULE:
 Products CANNOT go directly from VRAC → EXPEDITION
 ENFORCED FLOW: VRAC → PICKING → EXPEDITION via REPLENISHMENT
 
+FLOOR LAYOUT ARCHITECTURE:
+---------------------------
+Each warehouse has a multi-level floor structure:
+
+**1. GROUND FLOOR (Level 0) - PICKING & OPERATIONS:**
+   - Floor Type: GROUND
+   - Used for: Picking operations, expedition, VRAC overflow, offices
+   - Organized as a matrix of slots (rows × columns)
+   - Default: 10 rows × 20 columns = 200 slots
+   
+   Ground Floor Sections:
+   - PICKING: Main picking space for order fulfillment
+   - ELEVATOR: Central elevator area
+   - MONTE_CHARGE_1: Freight elevator 1
+   - MONTE_CHARGE_2: Freight elevator 2
+   - VRAC: Bulk storage space (overflow from main VRAC)
+   - EXPEDITION_1: Expedition zone 1
+   - EXPEDITION_2: Expedition zone 2
+   - BUREAU: Office area
+
+**2. STORAGE FLOORS (Levels 1-4) - PALLET STORAGE:**
+   - Floor Type: STORAGE
+   - Up to 4 storage floors per warehouse
+   - Used for: High-density pallet storage
+   - Organized as a matrix of slots (rows × columns)
+   - Default: 20 rows × 30 columns = 600 slots per floor
+   
+   Storage Floor Sections:
+   - PALETTE_SLOTS: Main pallet storage area
+   - ROUTE_SLOTS: Aisles and routes between storage
+   - ELEVATOR: Central elevator area
+   - MONTE_CHARGE_1: Freight elevator 1
+   - MONTE_CHARGE_2: Freight elevator 2
+
+**MATRIX-BASED SLOT SYSTEM:**
+Each floor is a matrix where:
+- Rows and Columns define precise positions
+- Slots are grouped into functional Sections
+- Each Slot has a unique code (e.g., GF-R03-C12 for ground floor)
+- Slots can contain:
+  * Storage locations (is_storage = TRUE)
+  * Infrastructure (is_infrastructure = TRUE) - elevators, offices
+  * Aisles (is_aisle = TRUE) - routes for movement
+
+**LOCATION-SLOT RELATIONSHIP:**
+- Locations (storage positions) can optionally reference a Slot
+- Ground floor picking locations typically reference PICKING section slots
+- Storage floor locations reference PALETTE_SLOTS section slots
+- VRAC locations may not have specific slot assignments (flexible)
+- Slot reference enables precise matrix-based positioning
+
+**FLOOR NAMING CONVENTIONS:**
+- Ground Floor Slots: GF-R{row:02d}-C{col:02d} (e.g., GF-R01-C05)
+- Storage Floor Slots: SF{level}-R{row:02d}-C{col:02d} (e.g., SF2-R10-C15)
+- Locations with Slots: {warehouse_code}-{slot_code}
+
 LOCATION STATUS STATES:
 -----------------------
 Each location has a status computed from capacity:
@@ -1401,16 +1513,39 @@ DAILY OPERATION MANAGEMENT:
 WAREHOUSE MANAGEMENT:
 □ CRUD for warehouses
 □ CRUD for floors
+  □ Set floor type (GROUND / STORAGE)
+  □ Configure matrix dimensions (rows × columns)
+  □ Support up to 4 storage floors + 1 ground floor
+□ CRUD for sections (functional areas within floors)
+  □ Configure section boundaries (start/end rows and columns)
+  □ Ground floor sections: PICKING, ELEVATOR, MONTE_CHARGE_1/2, VRAC, EXPEDITION_1/2, BUREAU
+  □ Storage floor sections: PALETTE_SLOTS, ROUTE_SLOTS, ELEVATOR, MONTE_CHARGE_1/2
+□ CRUD for slots (individual matrix positions)
+  □ Assign slot types (storage, infrastructure, aisle)
+  □ Link slots to sections
+  □ Generate unique slot codes (GF-R01-C05, SF2-R10-C15)
+□ Initialize complete warehouse floor layouts
+  □ Auto-generate ground floor with default sections
+  □ Auto-generate storage floors with default sections
+  □ Bulk create slots for each section
 □ CRUD for zones (RECEIVING, VRAC, PICKING, EXPEDITION)
-□ CRUD for locations with zone reference
+□ CRUD for locations with zone and optional slot reference
 □ Validate unique location codes
-□ Display warehouse map/cartography with zones
+□ Display warehouse map/cartography with:
+  □ Floor-by-floor visualization
+  □ Section overlay on matrix
+  □ Slot-level detail view
+  □ Zone boundaries
 □ Show real-time heatmap (LOCATION_TRAFFIC)
 □ Show daily heatmap (DAILY_LOCATION_TRAFFIC)
 □ Track location status (FREE, ASSIGNED, OCCUPIED)
 □ Monitor capacity utilization per zone
 □ Display available capacity per location
 □ Enforce capacity constraints (current + reserved <= capacity)
+□ Matrix-based location search and filtering
+  □ Find available slots in section
+  □ Query locations by floor and section
+  □ Filter by slot characteristics
 
 SKU & INVENTORY:
 □ CRUD for SKUs
@@ -1712,6 +1847,38 @@ PUT    /warehouses/:id           (Admin only)
 DELETE /warehouses/:id           (Admin only)
 GET    /warehouses/:id/floors
 GET    /warehouses/:id/zones
+POST   /warehouses/:id/initialize-floors  (Admin only - creates complete floor structure)
+
+FLOORS:
+GET    /floors
+POST   /floors                   (Admin only)
+GET    /floors/:id
+PUT    /floors/:id               (Admin only)
+DELETE /floors/:id               (Admin only)
+GET    /floors/:id/sections
+GET    /floors/:id/slots
+GET    /floors/warehouse/:warehouse_id
+
+SECTIONS:
+GET    /sections
+POST   /sections                 (Admin/Supervisor)
+GET    /sections/:id
+PUT    /sections/:id             (Admin/Supervisor)
+DELETE /sections/:id             (Admin only)
+GET    /sections/:id/slots
+GET    /sections/floor/:floor_id
+GET    /sections/type/:type      (Filter by section type)
+
+SLOTS:
+GET    /slots
+POST   /slots                    (Admin/Supervisor)
+GET    /slots/:id
+PUT    /slots/:id                (Admin/Supervisor)
+DELETE /slots/:id                (Admin only)
+GET    /slots/section/:section_id
+GET    /slots/floor/:floor_id
+GET    /slots/available          (Get slots without locations)
+POST   /slots/bulk-create        (Admin - bulk create slots for section)
 
 ZONES:
 GET    /zones
@@ -1729,10 +1896,15 @@ PUT    /locations/:id            (Admin/Supervisor)
 DELETE /locations/:id            (Admin only)
 GET    /locations/:id/traffic
 GET    /locations/:id/capacity   (Check available capacity)
+GET    /locations/:id/slot       (Get slot details for location)
 GET    /locations/heatmap
 GET    /locations/heatmap/daily/:daily_operation_id
 GET    /locations/zone/:zone_id
+GET    /locations/floor/:floor_id
+GET    /locations/section/:section_id
+GET    /locations/slot/:slot_id
 GET    /locations/status/:status (Get locations by status: FREE, ASSIGNED, OCCUPIED)
+POST   /locations/from-slots     (Admin/Supervisor - create locations from section slots)
 
 SKUS:
 GET    /skus
@@ -2294,6 +2466,21 @@ KEY ENHANCEMENTS OVER BASIC WMS:
     ✓ Adaptive thresholds based on demand patterns
     ✓ Hackathon differentiator: Fine-grained inventory control
 
+14. MATRIX-BASED FLOOR LAYOUT SYSTEM (NEW - MAJOR ENHANCEMENT)
+    ✓ FLOORS table: Distinguishes GROUND (picking operations) vs STORAGE (pallet storage)
+    ✓ Up to 4 storage floors + 1 ground floor per warehouse
+    ✓ Matrix organization: Each floor is rows × columns of slots
+    ✓ SECTIONS table: Groups slots into functional areas
+      - Ground floor: PICKING, ELEVATOR, MONTE_CHARGE_1/2, VRAC, EXPEDITION_1/2, BUREAU
+      - Storage floors: PALETTE_SLOTS, ROUTE_SLOTS, ELEVATOR, MONTE_CHARGE_1/2
+    ✓ SLOTS table: Individual positions in matrix (GF-R01-C05, SF2-R10-C15)
+    ✓ Slot types: Storage, Infrastructure, Aisle
+    ✓ Locations optionally reference slots for precise positioning
+    ✓ Enables multi-level warehouse modeling
+    ✓ Section boundaries define functional areas within floor matrix
+    ✓ Scalable: Configurable matrix dimensions per floor
+    ✓ Hackathon differentiator: Industrial-grade spatial organization
+
 TECHNICAL EXCELLENCE MARKERS:
 
 Schema Design:
@@ -2304,6 +2491,8 @@ Schema Design:
 ✓ **CHECK constraints for capacity validation**
 ✓ Triggers for automated consistency (stock, capacity, status)
 ✓ InnoDB engine for transaction support
+✓ **Matrix-based spatial modeling (FLOORS, SECTIONS, SLOTS)**
+✓ **Multi-level floor architecture support**
 
 Data Integrity:
 ✓ Immutable ledger (append-only STOCK_LEDGER)
@@ -2348,6 +2537,8 @@ HACKATHON WINNING FACTORS:
 ✅ **Proactive Management**: Automated replenishment prevents stockouts
 ✅ **Capacity Planning**: Reservation system prevents overbooking
 ✅ **Operational Intelligence**: Zone utilization + picking stock health monitoring
+✅ **Spatial Organization**: Matrix-based floor layouts with sections and slots
+✅ **Multi-Level Warehousing**: Ground floor + 4 storage floors architecture
 
 COMPARISON TABLE:
 
@@ -2368,14 +2559,18 @@ COMPARISON TABLE:
 | **Capacity Management** | ❌ | ❌ | ✅ **Reservation + real-time tracking** |
 | **Flow Enforcement** | ❌ | ❌ | ✅ **VRAC → PICKING → EXPEDITION** |
 | **Picking Stock Monitoring** | ❌ | ❌ | ✅ **Real-time thresholds** |
+| **Floor Layout System** | ❌ | ❌ | ✅ **Matrix-based with sections/slots** |
+| **Multi-Level Architecture** | ❌ | Basic | ✅ **Ground + 4 storage floors** |
+| **Spatial Organization** | ❌ | ❌ | ✅ **Section-based slot matrix** |
 
 IMPLEMENTATION PRIORITY (UPDATED):
 
 Phase 1 (Core):
-1. Database schema creation (including ZONES, LOCATION_RESERVATIONS)
+1. Database schema creation (including ZONES, LOCATION_RESERVATIONS, FLOORS, SECTIONS, SLOTS)
 2. Authentication + user management
-3. Warehouse + zone + location CRUD
-4. SKU + stock management (including picking thresholds)
+3. Warehouse + floor + section + slot structure
+4. Zone + location CRUD
+5. SKU + stock management (including picking thresholds)
 5. STOCK_LEDGER with triggers (including capacity updates)
 
 Phase 2 (Operations):
