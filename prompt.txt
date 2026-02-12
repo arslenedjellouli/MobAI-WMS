@@ -1,0 +1,2432 @@
+================================================================================
+MOBAI WAREHOUSE MANAGEMENT SYSTEM - COMPLETE AI AGENT PROMPT
+================================================================================
+
+PROJECT OVERVIEW:
+You are building an enterprise-grade mobile Warehouse Management System (WMS) 
+with AI-powered optimization for the MobAI hackathon. This system manages the 
+complete warehouse operation flow: Receipt → Transfer → Preparation → Picking → Delivery.
+
+The system has 3 roles: ADMIN, SUPERVISOR, EMPLOYEE
+- AI generates suggestions for storage locations and picking routes
+- SUPERVISOR and ADMIN can override AI decisions with justification
+- EMPLOYEE only sees validated final orders (abstraction layer)
+
+================================================================================
+PART 1: COMPLETE DATABASE SCHEMA
+================================================================================
+
+--- 0. DAILY OPERATION CONTEXT ---
+
+CREATE TABLE DAILY_OPERATION (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    operation_date DATE UNIQUE NOT NULL,
+    total_chariots_available INT NOT NULL DEFAULT 10,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_operation_date (operation_date)
+) ENGINE=InnoDB;
+
+--- 1. AUTHENTICATION & SECURITY ---
+
+CREATE TABLE USERS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    full_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('ADMIN', 'SUPERVISOR', 'EMPLOYEE') NOT NULL,
+    status ENUM('ACTIVE', 'DISABLED') DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_email (email),
+    INDEX idx_role (role)
+) ENGINE=InnoDB;
+
+CREATE TABLE USER_SESSIONS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    logout_time TIMESTAMP NULL,
+    device_info VARCHAR(255),
+    ip_address VARCHAR(45),
+    FOREIGN KEY (user_id) REFERENCES USERS(id) ON DELETE CASCADE,
+    INDEX idx_user_session (user_id, login_time)
+) ENGINE=InnoDB;
+
+CREATE TABLE ACTION_LOGS (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    action_type VARCHAR(50) NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    entity_id INT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSON,
+    FOREIGN KEY (user_id) REFERENCES USERS(id),
+    INDEX idx_action_timestamp (timestamp),
+    INDEX idx_action_user (user_id),
+    INDEX idx_action_entity (entity_type, entity_id)
+) ENGINE=InnoDB;
+
+--- 2. WAREHOUSE STRUCTURE ---
+
+CREATE TABLE WAREHOUSES (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(255) NOT NULL,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_code (code)
+) ENGINE=InnoDB;
+
+CREATE TABLE FLOORS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    warehouse_id INT NOT NULL,
+    level_number INT NOT NULL,
+    description VARCHAR(255),
+    FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_floor_level (warehouse_id, level_number),
+    INDEX idx_warehouse_floor (warehouse_id, level_number)
+) ENGINE=InnoDB;
+
+CREATE TABLE ZONES (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    warehouse_id INT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    type ENUM('RECEIVING', 'VRAC', 'PICKING', 'EXPEDITION') NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE,
+    INDEX idx_zone_warehouse (warehouse_id),
+    INDEX idx_zone_type (type)
+) ENGINE=InnoDB;
+
+CREATE TABLE LOCATIONS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    warehouse_id INT NOT NULL,
+    floor_id INT NULL,
+    zone_id INT NOT NULL,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    x_coord DECIMAL(10, 2),
+    y_coord DECIMAL(10, 2),
+    capacity INT NOT NULL DEFAULT 100,
+    current_capacity_used INT DEFAULT 0,
+    reserved_capacity INT DEFAULT 0,
+    status ENUM('FREE', 'ASSIGNED', 'OCCUPIED') DEFAULT 'FREE',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES WAREHOUSES(id) ON DELETE CASCADE,
+    FOREIGN KEY (floor_id) REFERENCES FLOORS(id) ON DELETE SET NULL,
+    FOREIGN KEY (zone_id) REFERENCES ZONES(id) ON DELETE CASCADE,
+    CONSTRAINT check_capacity_valid CHECK (current_capacity_used + reserved_capacity <= capacity),
+    CONSTRAINT check_capacity_positive CHECK (capacity >= 0),
+    CONSTRAINT check_used_positive CHECK (current_capacity_used >= 0),
+    CONSTRAINT check_reserved_positive CHECK (reserved_capacity >= 0),
+    INDEX idx_location_code (code),
+    INDEX idx_location_zone (zone_id),
+    INDEX idx_location_coords (x_coord, y_coord),
+    INDEX idx_location_active (is_active),
+    INDEX idx_location_status (status)
+) ENGINE=InnoDB;
+
+--- 3. SKU & INVENTORY ---
+
+CREATE TABLE SKUS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    sku_code VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    weight DECIMAL(10, 2),
+    min_picking_threshold INT DEFAULT 0,
+    max_picking_capacity INT NULL,
+    is_bulk BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_sku_code (sku_code),
+    INDEX idx_sku_bulk (is_bulk)
+) ENGINE=InnoDB;
+
+CREATE TABLE SKU_STATISTICS (
+    sku_id INT PRIMARY KEY,
+    demand_frequency DECIMAL(10, 4) DEFAULT 0,
+    delivery_frequency DECIMAL(10, 4) DEFAULT 0,
+    reception_frequency DECIMAL(10, 4) DEFAULT 0,
+    avg_daily_demand DECIMAL(10, 2) DEFAULT 0,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE STOCK (
+    sku_id INT NOT NULL,
+    location_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    version INT NOT NULL DEFAULT 1,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (sku_id, location_id),
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id) ON DELETE CASCADE,
+    FOREIGN KEY (location_id) REFERENCES LOCATIONS(id) ON DELETE CASCADE,
+    CONSTRAINT check_positive_quantity CHECK (quantity >= 0),
+    CONSTRAINT check_version_positive CHECK (version >= 1),
+    INDEX idx_stock_location (location_id),
+    INDEX idx_stock_quantity (quantity)
+) ENGINE=InnoDB;
+
+CREATE TABLE STOCK_LEDGER (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    sku_id INT NOT NULL,
+    from_location_id INT NULL,
+    to_location_id INT NULL,
+    quantity INT NOT NULL,
+    operation_type ENUM('RECEIPT', 'TRANSFER', 'REPLENISHMENT', 'PICKING', 'DELIVERY') NOT NULL,
+    performed_by INT NOT NULL,
+    validated_by INT NULL,
+    override_flag BOOLEAN DEFAULT FALSE,
+    justification TEXT NULL,
+    reference_document_type ENUM('BON_COMMANDE', 'BON_PREPARATION', 'BON_REPLENISHMENT', 'BON_PICKING', 'BON_LIVRAISON') NULL,
+    reference_document_id INT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    FOREIGN KEY (from_location_id) REFERENCES LOCATIONS(id),
+    FOREIGN KEY (to_location_id) REFERENCES LOCATIONS(id),
+    FOREIGN KEY (performed_by) REFERENCES USERS(id),
+    FOREIGN KEY (validated_by) REFERENCES USERS(id),
+    INDEX idx_ledger_timestamp (timestamp),
+    INDEX idx_ledger_sku (sku_id),
+    INDEX idx_ledger_operation (operation_type),
+    INDEX idx_ledger_reference (reference_document_type, reference_document_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE LOCATION_RESERVATIONS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    location_id INT NOT NULL,
+    sku_id INT NOT NULL,
+    quantity INT NOT NULL,
+    reservation_type ENUM('RECEPTION', 'REPLENISHMENT', 'TRANSFER') NOT NULL,
+    reference_document_type ENUM('BON_COMMANDE', 'BON_PREPARATION', 'BON_REPLENISHMENT', 'BON_PICKING') NOT NULL,
+    reference_document_id INT NOT NULL,
+    status ENUM('ACTIVE', 'COMPLETED', 'CANCELLED') DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    FOREIGN KEY (location_id) REFERENCES LOCATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    CONSTRAINT check_reservation_quantity_positive CHECK (quantity > 0),
+    INDEX idx_reservation_location (location_id),
+    INDEX idx_reservation_sku (sku_id),
+    INDEX idx_reservation_status (status),
+    INDEX idx_reservation_reference (reference_document_type, reference_document_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE PICKING_STOCK_STATUS (
+    sku_id INT NOT NULL,
+    location_id INT NOT NULL,
+    current_quantity INT NOT NULL DEFAULT 0,
+    last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (sku_id, location_id),
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id) ON DELETE CASCADE,
+    FOREIGN KEY (location_id) REFERENCES LOCATIONS(id) ON DELETE CASCADE,
+    INDEX idx_picking_stock_location (location_id),
+    INDEX idx_picking_stock_quantity (current_quantity)
+) ENGINE=InnoDB;
+
+--- 4. CHARIOT SYSTEM ---
+
+CREATE TABLE CHARIOTS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    status ENUM('AVAILABLE', 'BUSY', 'MAINTENANCE') DEFAULT 'AVAILABLE',
+    current_location_id INT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (current_location_id) REFERENCES LOCATIONS(id) ON DELETE SET NULL,
+    INDEX idx_chariot_status (status)
+) ENGINE=InnoDB;
+
+CREATE TABLE CHARIOT_ASSIGNMENTS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    chariot_id INT NOT NULL,
+    operation_type ENUM('PICKING', 'REPLENISHMENT') NOT NULL,
+    reference_id INT NOT NULL,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    released_at TIMESTAMP NULL,
+    FOREIGN KEY (chariot_id) REFERENCES CHARIOTS(id) ON DELETE CASCADE,
+    INDEX idx_chariot_assignment (chariot_id, released_at),
+    INDEX idx_chariot_operation (operation_type, reference_id)
+) ENGINE=InnoDB;
+
+--- 5. ORDER SYSTEM (BON-BASED WORKFLOW) ---
+
+-- BON DE COMMANDE (Incoming Products)
+CREATE TABLE BON_COMMANDE (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    daily_operation_id INT NOT NULL,
+    created_by INT NOT NULL,
+    status ENUM('PENDING', 'RECEIVED', 'CLOSED') DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (daily_operation_id) REFERENCES DAILY_OPERATION(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES USERS(id),
+    INDEX idx_bon_commande_daily (daily_operation_id),
+    INDEX idx_bon_commande_status (status),
+    INDEX idx_bon_commande_created (created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE BON_COMMANDE_ITEMS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    bon_commande_id INT NOT NULL,
+    sku_id INT NOT NULL,
+    quantity_received INT NOT NULL,
+    reception_datetime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (bon_commande_id) REFERENCES BON_COMMANDE(id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    INDEX idx_bon_commande_item_order (bon_commande_id)
+) ENGINE=InnoDB;
+
+-- BON DE PREPARATION (Outgoing Planning - AI Generated)
+CREATE TABLE BON_PREPARATION (
+    delivery_id INT PRIMARY KEY AUTO_INCREMENT,
+    daily_operation_id INT NOT NULL,
+    status ENUM('AI_GENERATED', 'VALIDATED', 'OVERRIDDEN', 'EXECUTED') DEFAULT 'AI_GENERATED',
+    generated_by_ai BOOLEAN DEFAULT FALSE,
+    validated_by INT NULL,
+    confidence_score DECIMAL(5, 4) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (daily_operation_id) REFERENCES DAILY_OPERATION(id) ON DELETE CASCADE,
+    FOREIGN KEY (validated_by) REFERENCES USERS(id),
+    INDEX idx_bon_prep_daily (daily_operation_id),
+    INDEX idx_bon_prep_status (status),
+    INDEX idx_bon_prep_created (created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE BON_PREPARATION_ITEMS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    delivery_id INT NOT NULL,
+    sku_id INT NOT NULL,
+    quantity_to_deliver INT NOT NULL,
+    current_storage_location_id INT NOT NULL,
+    FOREIGN KEY (delivery_id) REFERENCES BON_PREPARATION(delivery_id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    FOREIGN KEY (current_storage_location_id) REFERENCES LOCATIONS(id),
+    INDEX idx_bon_prep_item_delivery (delivery_id)
+) ENGINE=InnoDB;
+
+-- BON DE PICKING (Optimized Route Execution)
+CREATE TABLE BON_PICKING (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    delivery_id INT NOT NULL,
+    status ENUM('PENDING', 'IN_PROGRESS', 'COMPLETED') DEFAULT 'PENDING',
+    assigned_chariot_id INT NULL,
+    total_distance DECIMAL(10, 2) NULL,
+    optimized BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (delivery_id) REFERENCES BON_PREPARATION(delivery_id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_chariot_id) REFERENCES CHARIOTS(id) ON DELETE SET NULL,
+    INDEX idx_bon_picking_delivery (delivery_id),
+    INDEX idx_bon_picking_status (status),
+    INDEX idx_bon_picking_created (created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE BON_PICKING_ITEMS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    bon_picking_id INT NOT NULL,
+    sku_id INT NOT NULL,
+    quantity INT NOT NULL,
+    source_storage_location_id INT NOT NULL,
+    destination_picking_location_id INT NOT NULL,
+    sequence_number INT NOT NULL,
+    FOREIGN KEY (bon_picking_id) REFERENCES BON_PICKING(id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    FOREIGN KEY (source_storage_location_id) REFERENCES LOCATIONS(id),
+    FOREIGN KEY (destination_picking_location_id) REFERENCES LOCATIONS(id),
+    INDEX idx_bon_picking_item_order (bon_picking_id),
+    INDEX idx_bon_picking_sequence (bon_picking_id, sequence_number)
+) ENGINE=InnoDB;
+
+-- BON DE LIVRAISON (Delivery Validation)
+CREATE TABLE BON_LIVRAISON (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    delivery_id INT NOT NULL,
+    status ENUM('IDLE', 'IN_PROGRESS', 'DONE', 'FAILED') DEFAULT 'IDLE',
+    validated_by INT NULL,
+    notes TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (delivery_id) REFERENCES BON_PREPARATION(delivery_id) ON DELETE CASCADE,
+    FOREIGN KEY (validated_by) REFERENCES USERS(id),
+    INDEX idx_bon_livraison_delivery (delivery_id),
+    INDEX idx_bon_livraison_status (status),
+    INDEX idx_bon_livraison_updated (updated_at)
+) ENGINE=InnoDB;
+
+-- BON DE REPLENISHMENT (VRAC → PICKING Transfers)
+CREATE TABLE BON_REPLENISHMENT (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    daily_operation_id INT NOT NULL,
+    status ENUM('PENDING', 'IN_PROGRESS', 'DONE', 'FAILED') DEFAULT 'PENDING',
+    generated_by_ai BOOLEAN DEFAULT FALSE,
+    validated_by INT NULL,
+    assigned_chariot_id INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (daily_operation_id) REFERENCES DAILY_OPERATION(id) ON DELETE CASCADE,
+    FOREIGN KEY (validated_by) REFERENCES USERS(id),
+    FOREIGN KEY (assigned_chariot_id) REFERENCES CHARIOTS(id) ON DELETE SET NULL,
+    INDEX idx_bon_replenishment_daily (daily_operation_id),
+    INDEX idx_bon_replenishment_status (status),
+    INDEX idx_bon_replenishment_created (created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE BON_REPLENISHMENT_ITEMS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    bon_replenishment_id INT NOT NULL,
+    sku_id INT NOT NULL,
+    quantity INT NOT NULL,
+    from_vrac_location_id INT NOT NULL,
+    to_picking_location_id INT NOT NULL,
+    sequence_number INT NOT NULL,
+    FOREIGN KEY (bon_replenishment_id) REFERENCES BON_REPLENISHMENT(id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id),
+    FOREIGN KEY (from_vrac_location_id) REFERENCES LOCATIONS(id),
+    FOREIGN KEY (to_picking_location_id) REFERENCES LOCATIONS(id),
+    CONSTRAINT check_replenishment_quantity_positive CHECK (quantity > 0),
+    INDEX idx_bon_replenishment_item_order (bon_replenishment_id),
+    INDEX idx_bon_replenishment_sequence (bon_replenishment_id, sequence_number)
+) ENGINE=InnoDB;
+
+--- 6. AI DECISION & OVERRIDE SYSTEM ---
+
+CREATE TABLE AI_DECISIONS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    decision_type ENUM('STORAGE_ASSIGNMENT', 'PREPARATION_GENERATION', 'PICKING_OPTIMIZATION', 'REPLENISHMENT_GENERATION') NOT NULL,
+    reference_id INT NOT NULL,
+    ai_output JSON NOT NULL,
+    confidence_score DECIMAL(5, 4),
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ai_decision_type (decision_type),
+    INDEX idx_ai_decision_ref (decision_type, reference_id),
+    INDEX idx_ai_decision_time (generated_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE AI_OVERRIDES (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    ai_decision_id INT NOT NULL,
+    overridden_by INT NOT NULL,
+    new_decision JSON NOT NULL,
+    justification TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ai_decision_id) REFERENCES AI_DECISIONS(id),
+    FOREIGN KEY (overridden_by) REFERENCES USERS(id),
+    INDEX idx_override_decision (ai_decision_id),
+    INDEX idx_override_user (overridden_by),
+    INDEX idx_override_time (created_at)
+) ENGINE=InnoDB;
+
+--- 7. AI LEARNING & PERFORMANCE TRACKING ---
+
+CREATE TABLE AI_MODEL_WEIGHTS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    model_type ENUM('STORAGE', 'PICKING', 'FORECAST') NOT NULL,
+    weight_name VARCHAR(100) NOT NULL,
+    value DECIMAL(10, 6) NOT NULL,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_model_weight (model_type, weight_name),
+    INDEX idx_model_type (model_type)
+) ENGINE=InnoDB;
+
+CREATE TABLE SKU_FORECAST (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    sku_id INT NOT NULL,
+    daily_operation_id INT NOT NULL,
+    predicted_quantity DECIMAL(10, 2) NOT NULL,
+    actual_quantity DECIMAL(10, 2) NULL,
+    error_value DECIMAL(10, 2) NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sku_id) REFERENCES SKUS(id) ON DELETE CASCADE,
+    FOREIGN KEY (daily_operation_id) REFERENCES DAILY_OPERATION(id) ON DELETE CASCADE,
+    INDEX idx_forecast_sku (sku_id),
+    INDEX idx_forecast_daily (daily_operation_id),
+    INDEX idx_forecast_timestamp (timestamp)
+) ENGINE=InnoDB;
+
+CREATE TABLE AI_PERFORMANCE_METRICS (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    model_type ENUM('STORAGE', 'PICKING', 'FORECAST') NOT NULL,
+    metric_name VARCHAR(100) NOT NULL,
+    value DECIMAL(10, 4) NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_metrics_type (model_type),
+    INDEX idx_metrics_timestamp (timestamp)
+) ENGINE=InnoDB;
+
+--- 8. HEATMAP & TRAFFIC TRACKING ---
+
+CREATE TABLE LOCATION_TRAFFIC (
+    location_id INT PRIMARY KEY,
+    movement_count BIGINT DEFAULT 0,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (location_id) REFERENCES LOCATIONS(id) ON DELETE CASCADE,
+    INDEX idx_traffic_count (movement_count)
+) ENGINE=InnoDB;
+
+CREATE TABLE DAILY_LOCATION_TRAFFIC (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    location_id INT NOT NULL,
+    daily_operation_id INT NOT NULL,
+    movement_count INT DEFAULT 0,
+    FOREIGN KEY (location_id) REFERENCES LOCATIONS(id) ON DELETE CASCADE,
+    FOREIGN KEY (daily_operation_id) REFERENCES DAILY_OPERATION(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_daily_traffic (location_id, daily_operation_id),
+    INDEX idx_daily_traffic_operation (daily_operation_id),
+    INDEX idx_daily_traffic_location (location_id)
+) ENGINE=InnoDB;
+
+--- 9. OFFLINE SYNC SYSTEM ---
+
+CREATE TABLE DEVICES (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT NOT NULL,
+    device_identifier VARCHAR(255) UNIQUE NOT NULL,
+    last_sync_time TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES USERS(id),
+    INDEX idx_device_user (user_id),
+    INDEX idx_device_sync (last_sync_time)
+) ENGINE=InnoDB;
+
+CREATE TABLE SYNC_QUEUE (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id INT NOT NULL,
+    operation_payload JSON NOT NULL,
+    status ENUM('PENDING', 'PROCESSED', 'FAILED') DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP NULL,
+    error_message TEXT NULL,
+    FOREIGN KEY (device_id) REFERENCES DEVICES(id) ON DELETE CASCADE,
+    INDEX idx_sync_status (status),
+    INDEX idx_sync_device (device_id, status),
+    INDEX idx_sync_created (created_at)
+) ENGINE=InnoDB;
+
+================================================================================
+PART 2: CRITICAL DATABASE TRIGGERS & PROCEDURES
+================================================================================
+
+--- TRIGGER: Update STOCK, LOCATION_TRAFFIC, and LOCATION status from STOCK_LEDGER ---
+DELIMITER //
+CREATE TRIGGER after_ledger_insert 
+AFTER INSERT ON STOCK_LEDGER
+FOR EACH ROW
+BEGIN
+    -- Update stock at destination location
+    IF NEW.to_location_id IS NOT NULL THEN
+        INSERT INTO STOCK (sku_id, location_id, quantity, version)
+        VALUES (NEW.sku_id, NEW.to_location_id, NEW.quantity, 1)
+        ON DUPLICATE KEY UPDATE 
+            quantity = quantity + NEW.quantity,
+            version = version + 1;
+        
+        -- Update location capacity and status
+        UPDATE LOCATIONS
+        SET current_capacity_used = current_capacity_used + NEW.quantity,
+            status = CASE
+                WHEN current_capacity_used + NEW.quantity > 0 THEN 'OCCUPIED'
+                WHEN reserved_capacity > 0 THEN 'ASSIGNED'
+                ELSE 'FREE'
+            END
+        WHERE id = NEW.to_location_id;
+    END IF;
+    
+    -- Update stock at source location
+    IF NEW.from_location_id IS NOT NULL THEN
+        UPDATE STOCK 
+        SET quantity = quantity - NEW.quantity,
+            version = version + 1
+        WHERE sku_id = NEW.sku_id 
+        AND location_id = NEW.from_location_id;
+        
+        -- Update location capacity and status
+        UPDATE LOCATIONS
+        SET current_capacity_used = GREATEST(0, current_capacity_used - NEW.quantity),
+            status = CASE
+                WHEN current_capacity_used - NEW.quantity <= 0 AND reserved_capacity > 0 THEN 'ASSIGNED'
+                WHEN current_capacity_used - NEW.quantity <= 0 AND reserved_capacity <= 0 THEN 'FREE'
+                ELSE 'OCCUPIED'
+            END
+        WHERE id = NEW.from_location_id;
+    END IF;
+    
+    -- Update global traffic statistics
+    IF NEW.to_location_id IS NOT NULL THEN
+        INSERT INTO LOCATION_TRAFFIC (location_id, movement_count)
+        VALUES (NEW.to_location_id, 1)
+        ON DUPLICATE KEY UPDATE 
+            movement_count = movement_count + 1;
+    END IF;
+    
+    IF NEW.from_location_id IS NOT NULL THEN
+        INSERT INTO LOCATION_TRAFFIC (location_id, movement_count)
+        VALUES (NEW.from_location_id, 1)
+        ON DUPLICATE KEY UPDATE 
+            movement_count = movement_count + 1;
+    END IF;
+    
+    -- Update PICKING_STOCK_STATUS if operation involves picking zone
+    IF NEW.operation_type IN ('REPLENISHMENT', 'PICKING') THEN
+        IF NEW.to_location_id IS NOT NULL THEN
+            INSERT INTO PICKING_STOCK_STATUS (sku_id, location_id, current_quantity)
+            SELECT NEW.sku_id, NEW.to_location_id, NEW.quantity
+            ON DUPLICATE KEY UPDATE
+                current_quantity = current_quantity + NEW.quantity;
+        END IF;
+        
+        IF NEW.from_location_id IS NOT NULL THEN
+            UPDATE PICKING_STOCK_STATUS
+            SET current_quantity = GREATEST(0, current_quantity - NEW.quantity)
+            WHERE sku_id = NEW.sku_id AND location_id = NEW.from_location_id;
+        END IF;
+    END IF;
+END//
+DELIMITER ;
+
+--- TRIGGER: Update LOCATION reserved_capacity when reservation created ---
+DELIMITER //
+CREATE TRIGGER after_reservation_insert
+AFTER INSERT ON LOCATION_RESERVATIONS
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'ACTIVE' THEN
+        UPDATE LOCATIONS
+        SET reserved_capacity = reserved_capacity + NEW.quantity,
+            status = CASE
+                WHEN current_capacity_used > 0 THEN 'OCCUPIED'
+                WHEN reserved_capacity + NEW.quantity > 0 THEN 'ASSIGNED'
+                ELSE 'FREE'
+            END
+        WHERE id = NEW.location_id;
+    END IF;
+END//
+DELIMITER ;
+
+--- TRIGGER: Update LOCATION reserved_capacity when reservation updated ---
+DELIMITER //
+CREATE TRIGGER after_reservation_update
+AFTER UPDATE ON LOCATION_RESERVATIONS
+FOR EACH ROW
+BEGIN
+    -- If reservation was completed or cancelled, reduce reserved capacity
+    IF OLD.status = 'ACTIVE' AND NEW.status IN ('COMPLETED', 'CANCELLED') THEN
+        UPDATE LOCATIONS
+        SET reserved_capacity = GREATEST(0, reserved_capacity - OLD.quantity),
+            status = CASE
+                WHEN current_capacity_used > 0 THEN 'OCCUPIED'
+                WHEN reserved_capacity - OLD.quantity > 0 THEN 'ASSIGNED'
+                ELSE 'FREE'
+            END
+        WHERE id = OLD.location_id;
+    END IF;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Calculate total stock for SKU ---
+DELIMITER //
+CREATE PROCEDURE get_total_stock(IN p_sku_id INT)
+BEGIN
+    SELECT 
+        s.sku_code,
+        s.name,
+        SUM(st.quantity) as total_quantity,
+        COUNT(DISTINCT st.location_id) as location_count
+    FROM SKUS s
+    LEFT JOIN STOCK st ON s.id = st.sku_id
+    WHERE s.id = p_sku_id
+    GROUP BY s.id, s.sku_code, s.name;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Initialize daily operation ---
+DELIMITER //
+CREATE PROCEDURE initialize_daily_operation(
+    IN p_operation_date DATE,
+    IN p_total_chariots INT
+)
+BEGIN
+    INSERT INTO DAILY_OPERATION (operation_date, total_chariots_available)
+    VALUES (p_operation_date, p_total_chariots)
+    ON DUPLICATE KEY UPDATE 
+        total_chariots_available = p_total_chariots;
+    
+    SELECT id, operation_date, total_chariots_available
+    FROM DAILY_OPERATION
+    WHERE operation_date = p_operation_date;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Check available capacity at location ---
+DELIMITER //
+CREATE PROCEDURE check_available_capacity(
+    IN p_location_id INT
+)
+BEGIN
+    SELECT 
+        l.id,
+        l.code,
+        l.capacity,
+        l.current_capacity_used,
+        l.reserved_capacity,
+        (l.capacity - l.current_capacity_used - l.reserved_capacity) as available_capacity,
+        l.status
+    FROM LOCATIONS l
+    WHERE l.id = p_location_id;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Get picking stock levels below threshold ---
+DELIMITER //
+CREATE PROCEDURE get_low_picking_stock()
+BEGIN
+    SELECT 
+        s.id,
+        s.sku_code,
+        s.name,
+        s.min_picking_threshold,
+        COALESCE(SUM(pss.current_quantity), 0) as current_picking_stock,
+        (s.min_picking_threshold - COALESCE(SUM(pss.current_quantity), 0)) as deficit
+    FROM SKUS s
+    LEFT JOIN PICKING_STOCK_STATUS pss ON s.id = pss.sku_id
+    WHERE s.min_picking_threshold > 0
+    GROUP BY s.id, s.sku_code, s.name, s.min_picking_threshold
+    HAVING current_picking_stock < s.min_picking_threshold
+    ORDER BY deficit DESC;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Create reservation ---
+DELIMITER //
+CREATE PROCEDURE create_reservation(
+    IN p_location_id INT,
+    IN p_sku_id INT,
+    IN p_quantity INT,
+    IN p_reservation_type VARCHAR(50),
+    IN p_reference_document_type VARCHAR(50),
+    IN p_reference_document_id INT
+)
+BEGIN
+    DECLARE available_capacity INT;
+    
+    -- Check available capacity
+    SELECT (capacity - current_capacity_used - reserved_capacity)
+    INTO available_capacity
+    FROM LOCATIONS
+    WHERE id = p_location_id;
+    
+    IF available_capacity >= p_quantity THEN
+        INSERT INTO LOCATION_RESERVATIONS (
+            location_id,
+            sku_id,
+            quantity,
+            reservation_type,
+            reference_document_type,
+            reference_document_id,
+            status
+        ) VALUES (
+            p_location_id,
+            p_sku_id,
+            p_quantity,
+            p_reservation_type,
+            p_reference_document_type,
+            p_reference_document_id,
+            'ACTIVE'
+        );
+        
+        SELECT 'SUCCESS' as result, LAST_INSERT_ID() as reservation_id;
+    ELSE
+        SELECT 'INSUFFICIENT_CAPACITY' as result, available_capacity;
+    END IF;
+END//
+DELIMITER ;
+
+--- PROCEDURE: Complete reservation (convert to actual stock) ---
+DELIMITER //
+CREATE PROCEDURE complete_reservation(
+    IN p_reservation_id INT,
+    IN p_performed_by INT
+)
+BEGIN
+    DECLARE v_location_id INT;
+    DECLARE v_sku_id INT;
+    DECLARE v_quantity INT;
+    DECLARE v_ref_doc_type VARCHAR(50);
+    DECLARE v_ref_doc_id INT;
+    
+    -- Get reservation details
+    SELECT location_id, sku_id, quantity, reference_document_type, reference_document_id
+    INTO v_location_id, v_sku_id, v_quantity, v_ref_doc_type, v_ref_doc_id
+    FROM LOCATION_RESERVATIONS
+    WHERE id = p_reservation_id AND status = 'ACTIVE';
+    
+    IF v_location_id IS NOT NULL THEN
+        -- Insert into STOCK_LEDGER (this will trigger stock updates)
+        -- Note: from_location_id depends on operation type
+        INSERT INTO STOCK_LEDGER (
+            sku_id,
+            to_location_id,
+            quantity,
+            operation_type,
+            performed_by,
+            reference_document_type,
+            reference_document_id
+        ) VALUES (
+            v_sku_id,
+            v_location_id,
+            v_quantity,
+            'RECEIPT',  -- Adjust based on reservation_type
+            p_performed_by,
+            v_ref_doc_type,
+            v_ref_doc_id
+        );
+        
+        -- Mark reservation as completed
+        UPDATE LOCATION_RESERVATIONS
+        SET status = 'COMPLETED',
+            completed_at = CURRENT_TIMESTAMP
+        WHERE id = p_reservation_id;
+        
+        SELECT 'SUCCESS' as result;
+    ELSE
+        SELECT 'RESERVATION_NOT_FOUND' as result;
+    END IF;
+END//
+DELIMITER ;
+
+================================================================================
+PART 2.5: DAILY OPERATION WORKFLOW & BON-BASED ARCHITECTURE
+================================================================================
+
+CORE CONSTRAINT:
+----------------
+Every operational day starts with:
+1. A list of ingoing products (BON_COMMANDE)
+2. A list of outgoing products (BON_PREPARATION - AI generated)
+3. A FIXED number of chariots (DAILY_OPERATION.total_chariots_available)
+
+WAREHOUSE ZONES:
+----------------
+The warehouse is divided into functional zones:
+1. **RECEIVING**: Where products enter the warehouse
+2. **VRAC** (Bulk Storage): High-capacity bulk storage for large quantities
+3. **PICKING**: Intermediate storage optimized for order fulfillment
+4. **EXPEDITION**: Where products leave the warehouse
+
+CRITICAL FLOW RULE:
+Products CANNOT go directly from VRAC → EXPEDITION
+ENFORCED FLOW: VRAC → PICKING → EXPEDITION via REPLENISHMENT
+
+LOCATION STATUS STATES:
+-----------------------
+Each location has a status computed from capacity:
+- **FREE**: current_capacity_used = 0 AND reserved_capacity = 0
+- **ASSIGNED**: reserved_capacity > 0 BUT current_capacity_used = 0 (reservation pending physical arrival)
+- **OCCUPIED**: current_capacity_used > 0 (physically contains stock)
+
+CAPACITY RULE (ENFORCED BY CONSTRAINT):
+current_capacity_used + reserved_capacity <= capacity
+
+WORKFLOW SEQUENCE:
+------------------
+
+START OF DAY:
+1. System creates DAILY_OPERATION record with operation_date and total_chariots_available
+2. AI analyzes historical data (SKU_FORECAST) and generates BON_PREPARATION orders (forecasting)
+3. AI checks picking stock levels against min_picking_threshold
+4. If picking stock < threshold: AI generates BON_REPLENISHMENT
+5. Supervisors review and validate/override BON_PREPARATION and BON_REPLENISHMENT orders
+
+RECEIPT PHASE (Ingoing Products):
+1. Create BON_COMMANDE linked to daily_operation_id
+2. Add BON_COMMANDE_ITEMS with received quantities and reception_datetime
+3. AI decides storage location (VRAC or PICKING based on is_bulk flag and demand frequency)
+4. **RESERVATION PHASE**:
+   a. System calls create_reservation() procedure
+   b. Checks available_capacity = capacity - current_capacity_used - reserved_capacity
+   c. If sufficient: Creates LOCATION_RESERVATIONS entry with status='ACTIVE'
+   d. Updates LOCATIONS.reserved_capacity
+   e. LOCATIONS.status changes to 'ASSIGNED'
+5. Employee physically receives and places products at assigned location
+6. **COMPLETION PHASE**:
+   a. System calls complete_reservation() procedure
+   b. Records in STOCK_LEDGER with:
+      - operation_type = 'RECEIPT'
+      - reference_document_type = 'BON_COMMANDE'
+      - reference_document_id = bon_commande.id
+      - to_location_id = assigned location
+   c. Trigger updates STOCK table
+   d. Converts reserved_capacity → current_capacity_used
+   e. Marks reservation as 'COMPLETED'
+   f. LOCATIONS.status changes to 'OCCUPIED'
+
+TRANSFER PHASE (Storage Assignment):
+1. AI calculates optimal storage location for each received SKU
+2. Decision factors:
+   - Distance from receiving zone
+   - Weight (heavy items → lower floors)
+   - Demand frequency (high demand → PICKING zone, low demand → VRAC zone)
+   - Current congestion (check LOCATION_TRAFFIC)
+   - Available capacity (capacity - current_capacity_used - reserved_capacity)
+3. **Storage Logic**:
+   - IF is_bulk = TRUE OR demand_frequency < threshold: Assign to VRAC zone
+   - ELSE: Assign directly to PICKING zone
+4. Supervisor can override with justification
+5. Employee executes transfer
+6. System records in STOCK_LEDGER with:
+   - operation_type = 'TRANSFER'
+   - from_location_id = receiving zone
+   - to_location_id = assigned storage location
+
+REPLENISHMENT PHASE (VRAC → PICKING):
+1. **Trigger Conditions**:
+   a. Automated: AI monitors PICKING_STOCK_STATUS
+   b. When picking stock < min_picking_threshold: Generate BON_REPLENISHMENT
+   c. Manual: Supervisor can manually trigger replenishment
+2. **AI Replenishment Generation**:
+   a. Query get_low_picking_stock() procedure
+   b. For each SKU below threshold:
+      - Find available stock in VRAC zone
+      - Calculate quantity needed = min_picking_threshold - current_stock
+      - Cap at max_picking_capacity
+      - Select optimal VRAC location (closest, least congested)
+      - Select optimal PICKING location (available capacity, proximity to expedition)
+   c. Create BON_REPLENISHMENT linked to daily_operation_id
+   d. Add BON_REPLENISHMENT_ITEMS with:
+      - from_vrac_location_id (source VRAC location)
+      - to_picking_location_id (destination PICKING location)
+      - quantity
+      - sequence_number (optimized route)
+   e. Store decision in AI_DECISIONS with decision_type='REPLENISHMENT_GENERATION'
+3. **Reservation at PICKING location**:
+   a. Create LOCATION_RESERVATIONS for destination PICKING location
+   b. Check capacity constraints
+   c. Update reserved_capacity and status='ASSIGNED'
+4. **Chariot Assignment**:
+   a. Check available chariots (total_chariots_available - active_assignments)
+   b. If available: Assign chariot
+   c. Create CHARIOT_ASSIGNMENTS with operation_type='REPLENISHMENT'
+   d. Update CHARIOTS.status = 'BUSY'
+5. **Validation**:
+   a. Supervisor reviews BON_REPLENISHMENT
+   b. Can validate or override with justification
+   c. Status: PENDING → IN_PROGRESS
+6. **Execution**:
+   a. Employee receives replenishment order on mobile app
+   b. Navigate to VRAC location (from_vrac_location_id)
+   c. Pick specified quantity
+   d. Transport to PICKING location (to_picking_location_id)
+   e. Place stock in picking rack
+7. **Recording**:
+   a. System records in STOCK_LEDGER with:
+      - operation_type = 'REPLENISHMENT'
+      - reference_document_type = 'BON_REPLENISHMENT'
+      - from_location_id = VRAC location
+      - to_location_id = PICKING location
+   b. Trigger updates:
+      - STOCK at both locations
+      - PICKING_STOCK_STATUS.current_quantity
+      - LOCATION_TRAFFIC (heatmap)
+      - Converts reservation to actual stock
+   c. Status: IN_PROGRESS → DONE
+   d. Release chariot (CHARIOT_ASSIGNMENTS.released_at = NOW())
+
+PREPARATION PHASE (Outgoing Planning):
+1. BON_PREPARATION already created at start of day (AI forecasted from SKU_FORECAST)
+2. **Picking Stock Validation**:
+   a. For each BON_PREPARATION_ITEMS.quantity_to_deliver:
+      - Query PICKING_STOCK_STATUS for current_picking_stock
+      - IF current_picking_stock < quantity_to_deliver:
+         * Trigger BON_REPLENISHMENT (see above)
+         * Wait for replenishment to complete
+      - ELSE: Proceed to picking
+3. BON_PREPARATION_ITEMS contain:
+   - delivery_id (auto-increment, serves as central Delivery ID)
+   - sku_id
+   - quantity_to_deliver
+   - current_storage_location_id (**MUST be in PICKING zone**)
+4. Status flows: AI_GENERATED → VALIDATED/OVERRIDDEN → EXECUTED
+
+PICKING PHASE (Route Optimization):
+1. System creates BON_PICKING from validated BON_PREPARATION
+2. **CRITICAL VALIDATION**:
+   a. Verify ALL items are in PICKING zone locations
+   b. Verify sufficient quantity at each picking location
+   c. **Block if any item is in VRAC** (must replenish first)
+3. AI optimizes picking route:
+   a. Query all picking locations from BON_PREPARATION_ITEMS.current_storage_location_id
+   b. Calculate distances between all pairs using x_coord, y_coord
+   c. Apply TSP algorithm (Nearest Neighbor + 2-opt):
+      - Start from current chariot position or expedition zone
+      - Pick nearest unpicked item
+      - Repeat until all items picked
+      - Return to expedition zone
+   d. Considers current chariot positions (avoid collisions via CHARIOT_ASSIGNMENTS)
+   e. Factors in congestion (LOCATION_TRAFFIC)
+   f. Calculates total_distance
+4. BON_PICKING_ITEMS include sequence_number for ordered execution
+5. **Chariot Assignment**:
+   a. Check available chariots
+   b. Assign chariot with operation_type='PICKING'
+   c. Update CHARIOTS.status = 'BUSY'
+6. Employee follows optimized sequence on mobile app
+7. System records in STOCK_LEDGER with:
+   - operation_type = 'PICKING'
+   - reference_document_type = 'BON_PICKING'
+   - from_location_id = PICKING location (source)
+   - to_location_id = picking rack/staging location
+8. Release chariot on completion
+
+DELIVERY PHASE (Validation):
+1. Create BON_LIVRAISON linked to delivery_id
+2. Employee validates delivery success/failure
+3. Status: IDLE → IN_PROGRESS → DONE/FAILED
+4. System records in STOCK_LEDGER with:
+   - operation_type = 'DELIVERY'
+   - reference_document_type = 'BON_LIVRAISON'
+   - from_location_id = picking rack
+   - to_location_id = EXPEDITION zone
+5. Release assigned chariot
+
+CENTRAL LINKING KEY:
+--------------------
+delivery_id (from BON_PREPARATION.delivery_id) links:
+- BON_PREPARATION (outgoing plan)
+- BON_PICKING (execution route)
+- BON_LIVRAISON (delivery validation)
+
+This enables complete traceability: delivery_id → full lifecycle tracking
+
+CHARIOT CONSTRAINT ENFORCEMENT:
+-------------------------------
+1. Query DAILY_OPERATION.total_chariots_available for the day
+2. Count active assignments: SELECT COUNT(*) FROM CHARIOT_ASSIGNMENTS WHERE released_at IS NULL
+3. Available chariots = total_chariots_available - active_assignments
+4. Operations (PICKING + REPLENISHMENT) queue if no chariots available
+5. Priority: REPLENISHMENT (critical) > PICKING (scheduled)
+
+HEATMAP IMPLEMENTATION:
+-----------------------
+- LOCATION_TRAFFIC: Global cumulative movement count
+- DAILY_LOCATION_TRAFFIC: Per-day tracking linked to daily_operation_id
+- Updated automatically via STOCK_LEDGER trigger for ALL operation types
+- Used by AI for congestion-aware storage assignment and route optimization
+- Visualized in supervisor dashboard for real-time monitoring
+- **VRAC zone traffic** is now tracked (important for bulk movement patterns)
+
+AI DECISION TRANSPARENCY:
+-------------------------
+1. AI generates decision → Store in AI_DECISIONS with confidence_score
+2. Reference_id links to:
+   - BON_PREPARATION.delivery_id (for PREPARATION_GENERATION)
+   - BON_REPLENISHMENT.id (for REPLENISHMENT_GENERATION)
+   - BON_PICKING.id (for PICKING_OPTIMIZATION)
+   - Location.id (for STORAGE_ASSIGNMENT)
+3. Supervisor reviews → Can validate or override
+4. Override stored in AI_OVERRIDES with justification
+5. Employee sees only final validated decision (abstraction layer)
+6. System learns from override patterns to improve future decisions
+
+BUSINESS RULES (APPLICATION LAYER ENFORCEMENT):
+------------------------------------------------
+**RULE 1**: Cannot create BON_PICKING if ANY item's current_storage_location_id is in VRAC zone
+   → Must generate and complete BON_REPLENISHMENT first
+
+**RULE 2**: Replenishment from_vrac_location_id MUST reference a location in VRAC zone
+   → Validate zone_id matches VRAC zone type
+
+**RULE 3**: Picking current_storage_location_id MUST reference a location in PICKING zone
+   → Validate zone_id matches PICKING zone type
+
+**RULE 4**: Delivery (BON_LIVRAISON) MUST originate from PICKING zone only
+   → Enforce through BON_PICKING validation
+
+**RULE 5**: VRAC zone locations cannot exceed capacity
+   → Enforced by CHECK constraint: current_capacity_used + reserved_capacity <= capacity
+
+**RULE 6**: Picking location stock cannot exceed max_picking_capacity (from SKUS table)
+   → Validate before reservation: SUM(quantity) <= max_picking_capacity
+
+**RULE 7**: Direct VRAC → EXPEDITION movement is FORBIDDEN
+   → Block in application logic if from_zone=VRAC and to_zone=EXPEDITION
+
+**RULE 8**: Reservations must be completed or cancelled before creating new ones for same (location, sku)
+   → Check LOCATION_RESERVATIONS.status before new reservation
+
+ROLE-BASED VISIBILITY:
+----------------------
+EMPLOYEE:
+- Sees validated BON_COMMANDE to execute
+- Sees BON_REPLENISHMENT with step-by-step route
+- Sees validated BON_PICKING with sequence_number
+- Sees BON_LIVRAISON to validate delivery
+- NO visibility into AI decisions, overrides, or alternative suggestions
+
+SUPERVISOR:
+- Sees AI-generated BON_PREPARATION with confidence_score
+- Sees AI-generated BON_REPLENISHMENT with source/destination suggestions
+- Can validate or override with justification (stored in AI_OVERRIDES)
+- Sees real-time warehouse cartography:
+  * Location status (FREE/ASSIGNED/OCCUPIED)
+  * Capacity utilization heatmap
+  * Chariot positions and assignments
+  * Congestion hotspots (LOCATION_TRAFFIC)
+- Monitors all employee operations
+- Receives alerts when picking stock < min_picking_threshold
+
+ADMIN:
+- Full system access
+- Can override any decision
+- Manages users, warehouses, zones, configurations
+- Views AI performance metrics and audit logs
+- Analyzes override patterns and forecast accuracy
+- Configures SKU thresholds (min_picking_threshold, max_picking_capacity)
+- Sets daily chariot availability
+
+================================================================================
+PART 3: MOBILE APP ARCHITECTURE REQUIREMENTS
+================================================================================
+
+TECHNOLOGY STACK REQUIREMENTS:
+-------------------------------
+1. Mobile Framework: React Native / Flutter (your choice)
+2. Backend: Node.js + Express OR Python + FastAPI
+3. Database: MySQL 8.0+ or PostgreSQL 14+
+4. State Management: Redux / Zustand / Riverpod
+5. Offline Storage: SQLite + realm / WatermelonDB
+6. AI/ML: TensorFlow Lite / ONNX Runtime for mobile
+7. API Communication: RESTful API + WebSocket for real-time updates
+
+PROJECT STRUCTURE:
+------------------
+mobile-app/
+├── src/
+│   ├── features/
+│   │   ├── auth/
+│   │   ├── warehouse/
+│   │   ├── inventory/
+│   │   ├── orders/
+│   │   ├── operations/
+│   │   └── ai-agent/
+│   ├── shared/
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   ├── utils/
+│   │   └── constants/
+│   ├── core/
+│   │   ├── api/
+│   │   ├── database/
+│   │   ├── sync/
+│   │   └── ai/
+│   └── navigation/
+├── backend/
+│   ├── api/
+│   ├── services/
+│   ├── models/
+│   ├── ai-engine/
+│   └── database/
+└── tests/
+
+================================================================================
+PART 4: CODING PRINCIPLES & REQUIREMENTS
+================================================================================
+
+PRINCIPLE 1: CLEAN ARCHITECTURE
+--------------------------------
+✓ Separation of Concerns: Feature-based folder structure
+✓ Dependency Injection: Use service locators or DI containers
+✓ Repository Pattern: Abstract data layer from business logic
+✓ SOLID Principles: Single responsibility, Open-closed, etc.
+
+Example Structure:
+```
+features/
+  orders/
+    data/
+      repositories/
+      datasources/ (local + remote)
+      models/
+    domain/
+      entities/
+      usecases/
+      repositories/ (interfaces)
+    presentation/
+      screens/
+      widgets/
+      state/ (bloc/provider/riverpod)
+```
+
+PRINCIPLE 2: OFFLINE-FIRST ARCHITECTURE
+----------------------------------------
+✓ Local Database as Source of Truth
+✓ Queue-Based Sync Mechanism
+✓ Optimistic UI Updates
+✓ Conflict Resolution Strategy (Last-Write-Wins with version control)
+✓ Background Sync Service
+
+Implementation Requirements:
+1. All operations must work offline
+2. Queue operations in SYNC_QUEUE equivalent (local SQLite)
+3. Sync on connection restore
+4. Show sync status indicators in UI
+5. Handle conflicts using STOCK.version field (optimistic locking)
+
+PRINCIPLE 3: ROLE-BASED UI ABSTRACTION
+---------------------------------------
+✓ Employees: See only validated orders (NO AI decision history)
+✓ Supervisors: See AI suggestions + override capability
+✓ Admins: Full system access + override any decision
+
+Implementation:
+- Conditional rendering based on user.role
+- Route guards for protected screens
+- Different API endpoints per role
+- Server-side permission validation (NEVER trust client)
+
+PRINCIPLE 4: IMMUTABLE AUDIT TRAIL
+-----------------------------------
+✓ Never UPDATE or DELETE from STOCK_LEDGER
+✓ Always INSERT new records for movements
+✓ Maintain override history separately
+✓ Log all user actions in ACTION_LOGS
+
+Code Example:
+```javascript
+// ❌ WRONG - Never update ledger
+await db.update('stock_ledger').set({quantity: newQty})
+
+// ✅ CORRECT - Always insert with proper document reference
+await db.insert('stock_ledger').values({
+  sku_id,
+  from_location_id,
+  to_location_id,
+  quantity,
+  operation_type: 'TRANSFER',
+  performed_by: user.id,
+  reference_document_type: 'BON_PICKING',
+  reference_document_id: bon_picking_id,
+  timestamp: new Date()
+})
+```
+
+PRINCIPLE 5: TRANSACTION ATOMICITY
+-----------------------------------
+✓ Use database transactions for multi-step operations
+✓ Rollback on any failure
+✓ Validate stock availability BEFORE executing
+✓ Check version conflicts for optimistic locking
+
+Code Example:
+```javascript
+async function executeTransfer(sku_id, from_loc, to_loc, qty, user_id) {
+  const transaction = await db.transaction();
+  
+  try {
+    // 1. Validate stock availability
+    const stock = await transaction
+      .select()
+      .from('stock')
+      .where({sku_id, location_id: from_loc})
+      .forUpdate(); // Lock row
+    
+    if (stock.quantity < qty) {
+      throw new Error('Insufficient stock');
+    }
+    
+    // 2. Check version (optimistic locking)
+    const currentVersion = stock.version;
+    
+    // 3. Insert into ledger
+    await transaction.insert('stock_ledger').values({
+      sku_id,
+      from_location_id: from_loc,
+      to_location_id: to_loc,
+      quantity: qty,
+      operation_type: 'TRANSFER',
+      performed_by: user_id
+    });
+    
+    // 4. Update stock (via trigger or manual)
+    // Trigger handles this automatically
+    
+    await transaction.commit();
+    return { success: true };
+    
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+```
+
+PRINCIPLE 6: AI DECISION TRANSPARENCY
+--------------------------------------
+✓ Store original AI output in AI_DECISIONS table
+✓ Store overrides separately in OVERRIDES table
+✓ Never modify original AI decision
+✓ Display confidence scores to supervisors
+✓ Track override patterns for learning
+
+Workflow:
+1. AI generates decision → Store in AI_DECISIONS
+2. Supervisor reviews → Can approve or override
+3. If override → Store in OVERRIDES with justification
+4. Employee sees final validated decision only
+5. System learns from overrides
+
+PRINCIPLE 7: REAL-TIME UPDATES
+-------------------------------
+✓ WebSocket connection for live updates
+✓ Broadcast events: stock changes, order updates, chariot positions
+✓ Heatmap updates in real-time
+✓ Supervisor dashboard shows live employee locations
+
+Events to Implement:
+- stock.updated
+- order.created
+- order.validated
+- chariot.moved
+- location.congested
+
+PRINCIPLE 8: AI OPTIMIZATION ALGORITHMS
+----------------------------------------
+
+Storage Optimization:
+✓ Calculate distance from receipt zone to storage location
+✓ Factor in: weight (heavy → lower floors), demand frequency (high → near picking)
+✓ Avoid congested zones (check LOCATION_TRAFFIC)
+✓ Consider slot availability
+
+Scoring Formula Example:
+```
+score = (w1 * distance_score) 
+      + (w2 * floor_penalty)
+      + (w3 * demand_score)
+      + (w4 * congestion_penalty)
+      + (w5 * availability_score)
+
+where weights (w1...w5) are stored in AI_MODEL_WEIGHTS
+```
+
+Implementation Flow:
+1. Employee receives SKU at receiving zone
+2. AI queries available storage locations
+3. For each location, calculate:
+   - Euclidean distance from receiving zone (using x_coord, y_coord)
+   - Floor penalty: weight * floor_level (heavier items prefer lower floors)
+   - Demand score: SKU_STATISTICS.demand_frequency (higher demand → closer to picking)
+   - Congestion penalty: LOCATION_TRAFFIC.movement_count (avoid busy zones)
+   - Availability: current occupied slots vs total capacity
+4. Apply scoring formula with weights from AI_MODEL_WEIGHTS
+5. Return top 3 locations with confidence scores
+6. Store decision in AI_DECISIONS with decision_type='STORAGE_ASSIGNMENT'
+7. Present to supervisor for validation or override
+
+Picking Optimization:
+✓ Shortest path algorithm (Dijkstra / A*)
+✓ Traveling Salesman Problem (TSP) for multi-pick routes
+✓ Sequence by distance to expedition zone
+✓ Avoid chariot collisions (path planning)
+
+Implementation Flow:
+1. Input: BON_PREPARATION with items to pick
+2. Query current storage locations for each SKU from BON_PREPARATION_ITEMS.current_storage_location_id
+3. Build graph of all pick locations
+4. Calculate distances between all pairs using coordinates
+5. Apply TSP algorithm:
+   a. Nearest Neighbor: Start from expedition, pick nearest unpicked item
+   b. Repeat until all items picked
+   c. Apply 2-opt improvement to reduce total distance
+6. Assign sequence_number to each pick (1, 2, 3, ...)
+7. Calculate total_distance for the route
+8. Check CHARIOT_ASSIGNMENTS to avoid chariot collision in same time window
+9. Create BON_PICKING with optimized route
+10. Store decision in AI_DECISIONS with decision_type='PICKING_OPTIMIZATION'
+
+Path Collision Avoidance:
+```sql
+SELECT ba.chariot_id, bp.id, bpi.source_storage_location_id
+FROM CHARIOT_ASSIGNMENTS ba
+JOIN BON_PICKING bp ON ba.bon_picking_id = bp.id
+JOIN BON_PICKING_ITEMS bpi ON bp.id = bpi.bon_picking_id
+WHERE ba.released_at IS NULL  -- Active assignments
+AND bp.status = 'IN_PROGRESS'
+```
+If paths overlap, adjust sequence or delay assignment.
+
+PRINCIPLE 9: ERROR HANDLING & VALIDATION
+-----------------------------------------
+✓ Server-side validation for ALL operations
+✓ Explicit error messages (NFR-8)
+✓ Graceful degradation in offline mode
+✓ Retry logic for sync failures
+✓ User-friendly error display
+
+Error Categories:
+1. Validation Errors: "Insufficient stock at location B7-N1-C7"
+2. Permission Errors: "Only supervisors can override AI decisions"
+3. Sync Errors: "Sync failed. Changes saved locally and will retry."
+4. Conflict Errors: "Stock was modified by another user. Please retry."
+
+PRINCIPLE 10: TESTING REQUIREMENTS
+-----------------------------------
+✓ Unit Tests: All business logic functions
+✓ Integration Tests: API endpoints + database operations
+✓ E2E Tests: Critical user flows (Receipt → Transfer → Picking → Delivery)
+✓ Offline Tests: Verify offline functionality
+✓ Concurrency Tests: Test optimistic locking with version conflicts
+
+Test Coverage Goals:
+- Business Logic: 90%+
+- API Endpoints: 80%+
+- UI Components: 70%+
+
+================================================================================
+PART 5: FEATURE IMPLEMENTATION CHECKLIST
+================================================================================
+
+AUTHENTICATION MODULE:
+□ Login with email/password
+□ JWT token management
+□ Role-based route protection
+□ Session management
+□ Auto-logout after inactivity
+□ Remember device
+
+DAILY OPERATION MANAGEMENT:
+□ Initialize daily operation with date and chariot count
+□ View daily operation details
+□ Track chariot availability for current day
+□ Generate daily performance summary
+□ Compare daily metrics (today vs previous days)
+
+WAREHOUSE MANAGEMENT:
+□ CRUD for warehouses
+□ CRUD for floors
+□ CRUD for zones (RECEIVING, VRAC, PICKING, EXPEDITION)
+□ CRUD for locations with zone reference
+□ Validate unique location codes
+□ Display warehouse map/cartography with zones
+□ Show real-time heatmap (LOCATION_TRAFFIC)
+□ Show daily heatmap (DAILY_LOCATION_TRAFFIC)
+□ Track location status (FREE, ASSIGNED, OCCUPIED)
+□ Monitor capacity utilization per zone
+□ Display available capacity per location
+□ Enforce capacity constraints (current + reserved <= capacity)
+
+SKU & INVENTORY:
+□ CRUD for SKUs
+□ Configure SKU parameters:
+  □ min_picking_threshold (trigger replenishment threshold)
+  □ max_picking_capacity (maximum picking stock)
+  □ is_bulk (store in VRAC by default)
+□ View stock per location
+□ View stock per zone
+□ View total stock per SKU
+□ Prevent negative stock
+□ Stock movement history (from STOCK_LEDGER)
+□ Real-time stock updates
+□ Track SKU statistics (demand, delivery, reception frequency)
+□ Monitor picking stock levels (PICKING_STOCK_STATUS)
+□ Alert when picking stock < min_picking_threshold
+
+CHARIOT MANAGEMENT:
+□ CRUD for chariots
+□ Assign chariot to BON_PICKING
+□ Assign chariot to BON_REPLENISHMENT
+□ Track chariot current location
+□ Display chariot paths on map
+□ Update status (AVAILABLE/BUSY/MAINTENANCE)
+□ Release chariot after operation completion
+□ Check available chariots against daily limit
+□ Queue operations when chariots unavailable
+□ Prioritize replenishment over picking when chariots limited
+
+ORDER OPERATIONS:
+
+BON DE COMMANDE (Receipt):
+□ Create bon de commande linked to daily operation
+□ Add items with received quantities and reception datetime
+□ Scan/enter received quantities
+□ Flag discrepancies between expected and received
+□ AI decides storage zone:
+  □ IF is_bulk = TRUE → VRAC zone
+  □ ELSE IF demand_frequency > threshold → PICKING zone
+  □ ELSE → VRAC zone
+□ Create LOCATION_RESERVATIONS at destination:
+  □ Check available capacity (capacity - current - reserved)
+  □ Reserve space before physical receipt
+  □ Update location status to ASSIGNED
+□ Physical receipt and placement
+□ Convert reservation to actual stock
+□ Record in STOCK_LEDGER with reference_document_type='BON_COMMANDE'
+□ Update BON_COMMANDE status (PENDING → RECEIVED → CLOSED)
+□ Update location status to OCCUPIED
+□ Display all bons for current daily operation
+
+Transfer (Storage Assignment):
+□ AI suggests optimal storage location for received SKU
+□ Display suggestion with confidence score to supervisor
+□ Supervisor validates or overrides with justification
+□ Display validated assignment to employee
+□ Execute transfer and record in STOCK_LEDGER
+□ Track override patterns in AI_OVERRIDES
+
+BON DE REPLENISHMENT (VRAC → PICKING):
+□ Automated trigger when picking stock < min_picking_threshold
+□ AI queries PICKING_STOCK_STATUS for low stock SKUs
+□ For each low-stock SKU:
+  □ Find available stock in VRAC zone
+  □ Calculate quantity needed = min_picking_threshold - current stock
+  □ Cap at max_picking_capacity
+  □ Select optimal VRAC source location (closest, least congested)
+  □ Select optimal PICKING destination (available capacity, proximity)
+□ Generate BON_REPLENISHMENT with items
+□ Assign sequence_number for optimized route
+□ Create LOCATION_RESERVATIONS at PICKING destination
+□ Check available chariots
+□ Supervisor validates or overrides
+□ Assign chariot with operation_type='REPLENISHMENT'
+□ Employee executes VRAC → PICKING transfer
+□ Record in STOCK_LEDGER with reference_document_type='BON_REPLENISHMENT'
+□ Update PICKING_STOCK_STATUS
+□ Complete reservation and update location status
+□ Release chariot
+□ Track replenishment frequency and patterns
+
+BON DE PREPARATION (Outgoing Planning):
+□ AI forecasts required SKUs and quantities for next day
+□ Generate BON_PREPARATION with delivery_id
+□ Link to daily_operation_id
+□ Add items with quantity_to_deliver and current_storage_location_id
+□ **CRITICAL VALIDATION**:
+  □ Check IF current_storage_location_id is in VRAC zone
+  □ IF YES: Block order and trigger BON_REPLENISHMENT first
+  □ ENFORCE: Only PICKING zone locations allowed for delivery
+□ Query PICKING_STOCK_STATUS for each SKU
+□ IF picking stock < quantity_to_deliver:
+  □ Generate BON_REPLENISHMENT automatically
+  □ Wait for replenishment completion
+  □ Update BON_PREPARATION with new PICKING location
+□ Record confidence_score for forecasting
+□ Supervisor validates or overrides
+□ Display to employee once status = VALIDATED/OVERRIDDEN
+□ Track in SKU_FORECAST with predicted vs actual quantities
+
+BON DE PICKING (Route Optimization):
+□ Generate BON_PICKING from validated BON_PREPARATION
+□ **PRE-EXECUTION VALIDATION**:
+  □ Verify ALL items are in PICKING zone (not VRAC)
+  □ Verify sufficient quantity at each picking location
+  □ Block if ANY item location zone_type != 'PICKING'
+  □ Display error: "Replenishment required for SKU_XXX in VRAC"
+□ AI calculates optimized route (TSP algorithm)
+□ Assign sequence_number to each picking item
+□ Calculate and store total_distance
+□ Check chariot availability
+□ Assign available chariot (check CHARIOT_ASSIGNMENTS)
+□ Display sequence to employee with step-by-step guidance
+□ Supervisor can override route with justification
+□ Update status: PENDING → IN_PROGRESS → COMPLETED
+□ Record picking in STOCK_LEDGER with reference_document_type='BON_PICKING'
+□ Update PICKING_STOCK_STATUS quantities
+□ Release chariot on completion
+
+BON DE LIVRAISON (Delivery Validation):
+□ Create BON_LIVRAISON linked to delivery_id
+□ Update status: IDLE → IN_PROGRESS → DONE/FAILED
+□ Validate delivery success or document failure
+□ Record in STOCK_LEDGER with reference_document_type='BON_LIVRAISON'
+□ Add notes for failures or special conditions
+□ Close order loop and update all related statuses
+
+AI AGENT FEATURES:
+
+Forecasting Service:
+□ Analyze SKU_FORECAST historical data
+□ Predict demand using time series analysis
+□ Generate BON_PREPARATION one day in advance
+□ Calculate confidence scores for predictions
+□ Update SKU_STATISTICS with frequencies
+□ Track forecast error (predicted vs actual)
+□ Store performance in AI_PERFORMANCE_METRICS
+
+Storage Optimization:
+□ Calculate distances from receipt to storage locations
+□ **Zone Selection Logic**:
+  □ IF is_bulk = TRUE → assign to VRAC zone
+  □ ELSE IF demand_frequency > threshold → assign to PICKING zone
+  □ ELSE → assign to VRAC zone (default for low-demand items)
+□ Factor in weight (heavy → lower floors)
+□ Consider demand frequency (high → near picking zones)
+□ Check congestion (LOCATION_TRAFFIC)
+□ Evaluate available capacity (capacity - current_capacity_used - reserved_capacity)
+□ **Capacity Constraint**: Exclude locations with insufficient available capacity
+□ Use AI_MODEL_WEIGHTS for multi-criteria scoring
+□ Return optimal location with confidence score
+□ Log decision in AI_DECISIONS
+
+Replenishment Optimization (NEW):
+□ Monitor PICKING_STOCK_STATUS real-time
+□ Detect when picking stock < min_picking_threshold
+□ Query available stock in VRAC zone for required SKU
+□ Calculate optimal replenishment quantity:
+  □ quantity = min(max_picking_capacity - current_stock, available_vrac_stock)
+  □ Ensure quantity brings stock to min_picking_threshold
+□ Select optimal VRAC source location:
+  □ Has sufficient stock
+  □ Closest to PICKING zone (distance calculation)
+  □ Least congested (LOCATION_TRAFFIC)
+□ Select optimal PICKING destination:
+  □ Has available capacity (capacity - current - reserved >= quantity)
+  □ Closest to expedition zone
+  □ Compatible with SKU characteristics
+□ Calculate optimized route for multi-SKU replenishment
+□ Apply sequence_number for efficient execution
+□ Check chariot availability before generating
+□ Generate BON_REPLENISHMENT with confidence score
+□ Store decision in AI_DECISIONS with decision_type='REPLENISHMENT_GENERATION'
+
+Picking Optimization:
+□ **Pre-validation**: Verify all items in PICKING zone
+□ Implement shortest path algorithm (Dijkstra or A*)
+□ Apply TSP solution for multi-pick routes (Nearest Neighbor + 2-opt)
+□ Sequence picks by proximity to expedition zone
+□ Check chariot availability and avoid collisions
+□ Calculate total_distance for route
+□ Store sequence_number in BON_PICKING_ITEMS
+□ Consider congestion in route calculation
+□ **Block execution** if any item in VRAC zone
+
+Adaptive Learning:
+□ Track override patterns in AI_OVERRIDES
+□ Calculate forecast errors (MAE) from SKU_FORECAST
+□ Adjust AI_MODEL_WEIGHTS based on override frequency
+□ Update weights: decrease if location overridden 5+ times
+□ Learn from replenishment patterns:
+  □ Track frequency of replenishment per SKU
+  □ Adjust min_picking_threshold if too frequent or rare
+  □ Refine VRAC → PICKING assignment logic
+□ Store learning metrics in AI_PERFORMANCE_METRICS
+□ Retrain weekly with new data
+
+SUPERVISOR DASHBOARD:
+□ View all AI-generated BON_PREPARATION orders
+□ View all AI-generated BON_REPLENISHMENT orders
+□ Review with confidence scores
+□ Approve or override decisions with justification
+□ Real-time warehouse cartography with:
+  - Employee location tracking
+  - Chariot position display
+  - Congestion heatmap (LOCATION_TRAFFIC)
+  - Active operations visualization
+  - **Zone-based color coding** (RECEIVING, VRAC, PICKING, EXPEDITION)
+  - **Location status overlay** (FREE=green, ASSIGNED=yellow, OCCUPIED=red)
+  - **Capacity utilization heatmap** per location
+□ Monitor daily operation progress
+□ View available vs assigned chariots
+□ Review BON_PICKING routes before execution
+□ Review BON_REPLENISHMENT routes before execution
+□ **Picking Stock Monitoring**:
+  - View PICKING_STOCK_STATUS dashboard
+  - Alert when SKUs approach min_picking_threshold
+  - Manually trigger replenishment if needed
+□ Validate deliveries (BON_LIVRAISON)
+□ Analyze override history and patterns
+□ Monitor reservation queue (LOCATION_RESERVATIONS)
+□ Track VRAC → PICKING flow efficiency
+
+ADMIN DASHBOARD:
+□ User management (CRUD)
+□ Role assignment (ADMIN/SUPERVISOR/EMPLOYEE)
+□ View all audit logs (ACTION_LOGS)
+□ Initialize daily operations with chariot count
+□ **Zone Management**:
+  □ CRUD for zones
+  □ Configure zone types and capacities
+  □ Monitor zone utilization (VRAC vs PICKING distribution)
+□ **SKU Configuration**:
+  □ Set min_picking_threshold per SKU
+  □ Set max_picking_capacity per SKU
+  □ Configure is_bulk flag
+□ AI performance metrics and trends
+□ Override any decision with justification
+□ System configuration (AI weights, location types)
+□ Forecast accuracy reports (SKU_FORECAST analysis)
+□ Chariot utilization statistics
+□ Daily operation summaries and comparisons
+□ **Replenishment Analytics**:
+  □ Replenishment frequency per SKU
+  □ VRAC → PICKING efficiency metrics
+  □ Picking stock health trends
+  □ Capacity utilization trends per zone
+  □ Reservation completion rates
+
+OFFLINE SYNC:
+□ Local SQLite database mirroring server schema
+□ Queue operations in SYNC_QUEUE locally
+□ Background sync service (check connection periodically)
+□ Conflict resolution using STOCK.version (optimistic locking)
+□ Sync status indicator (online/offline/syncing)
+□ Manual sync trigger button
+□ Handle partial sync failures gracefully
+□ Retry failed operations with exponential backoff
+
+NOTIFICATIONS:
+□ Stock level alerts (low stock warnings)
+□ Order assignment notifications (new BON assigned to employee)
+□ Override notifications (to supervisors when AI decision overridden)
+□ Sync status updates (sync completed/failed)
+□ Delivery validation reminders
+□ Chariot availability alerts
+□ Daily operation start notifications
+
+================================================================================
+PART 6: API ENDPOINT REQUIREMENTS
+================================================================================
+
+BASE URL: /api/v1
+
+AUTHENTICATION:
+POST   /auth/login
+POST   /auth/logout
+POST   /auth/refresh
+GET    /auth/me
+
+USERS:
+GET    /users                    (Admin only)
+POST   /users                    (Admin only)
+PUT    /users/:id                (Admin only)
+DELETE /users/:id                (Admin only)
+GET    /users/:id/logs           (Admin only)
+
+DAILY OPERATIONS:
+GET    /daily-operations
+POST   /daily-operations         (Admin/Supervisor)
+GET    /daily-operations/:id
+GET    /daily-operations/date/:date
+PUT    /daily-operations/:id     (Admin only)
+
+WAREHOUSES:
+GET    /warehouses
+POST   /warehouses               (Admin only)
+PUT    /warehouses/:id           (Admin only)
+DELETE /warehouses/:id           (Admin only)
+GET    /warehouses/:id/floors
+GET    /warehouses/:id/zones
+
+ZONES:
+GET    /zones
+POST   /zones                    (Admin only)
+GET    /zones/:id
+PUT    /zones/:id                (Admin only)
+DELETE /zones/:id                (Admin only)
+GET    /zones/warehouse/:warehouse_id
+GET    /zones/type/:type         (Get zones by type: RECEIVING, VRAC, PICKING, EXPEDITION)
+
+LOCATIONS:
+GET    /locations
+POST   /locations                (Admin/Supervisor)
+PUT    /locations/:id            (Admin/Supervisor)
+DELETE /locations/:id            (Admin only)
+GET    /locations/:id/traffic
+GET    /locations/:id/capacity   (Check available capacity)
+GET    /locations/heatmap
+GET    /locations/heatmap/daily/:daily_operation_id
+GET    /locations/zone/:zone_id
+GET    /locations/status/:status (Get locations by status: FREE, ASSIGNED, OCCUPIED)
+
+SKUS:
+GET    /skus
+POST   /skus                     (Admin/Supervisor)
+PUT    /skus/:id                 (Admin/Supervisor)
+DELETE /skus/:id                 (Admin only)
+GET    /skus/:id/stock
+GET    /skus/:id/statistics
+GET    /skus/:id/forecast
+
+STOCK:
+GET    /stock
+GET    /stock/location/:id
+GET    /stock/sku/:id
+GET    /stock/ledger             (Admin/Supervisor)
+GET    /stock/movements          (All users)
+
+CHARIOTS:
+GET    /chariots
+POST   /chariots                 (Admin/Supervisor)
+PUT    /chariots/:id             (Admin/Supervisor)
+DELETE /chariots/:id             (Admin only)
+POST   /chariots/:id/assign
+POST   /chariots/:id/release
+GET    /chariots/available       (Check available chariots for current day)
+
+BON DE COMMANDE (Receipt Orders):
+GET    /bon-commande
+POST   /bon-commande
+GET    /bon-commande/:id
+PUT    /bon-commande/:id
+POST   /bon-commande/:id/receive
+GET    /bon-commande/daily/:daily_operation_id
+
+BON DE PREPARATION (Outgoing Planning):
+GET    /bon-preparation
+POST   /bon-preparation/generate        (AI trigger - generates for next day)
+GET    /bon-preparation/:delivery_id
+POST   /bon-preparation/:delivery_id/validate    (Supervisor)
+POST   /bon-preparation/:delivery_id/override    (Admin/Supervisor)
+GET    /bon-preparation/daily/:daily_operation_id
+
+BON DE PICKING (Picking Orders):
+GET    /bon-picking
+POST   /bon-picking/generate            (Create from validated BON_PREPARATION)
+GET    /bon-picking/:id
+POST   /bon-picking/:id/assign-chariot
+POST   /bon-picking/:id/start           (Employee starts execution)
+POST   /bon-picking/:id/complete        (Employee completes execution)
+GET    /bon-picking/delivery/:delivery_id
+
+BON DE LIVRAISON (Delivery Validation):
+GET    /bon-livraison
+POST   /bon-livraison                   (Create delivery record)
+GET    /bon-livraison/:id
+PUT    /bon-livraison/:id/status        (Update IDLE → IN_PROGRESS → DONE/FAILED)
+POST   /bon-livraison/:id/validate      (Supervisor validation)
+GET    /bon-livraison/delivery/:delivery_id
+
+BON DE REPLENISHMENT (VRAC → PICKING):
+GET    /bon-replenishment
+POST   /bon-replenishment/generate      (AI trigger - generates from low picking stock)
+GET    /bon-replenishment/:id
+POST   /bon-replenishment/:id/validate  (Supervisor)
+POST   /bon-replenishment/:id/override  (Admin/Supervisor)
+POST   /bon-replenishment/:id/assign-chariot
+POST   /bon-replenishment/:id/start     (Employee starts execution)
+POST   /bon-replenishment/:id/complete  (Employee completes execution)
+GET    /bon-replenishment/daily/:daily_operation_id
+GET    /bon-replenishment/pending       (Get pending replenishment orders)
+
+RESERVATIONS:
+GET    /reservations
+POST   /reservations                    (Create location reservation)
+GET    /reservations/:id
+PUT    /reservations/:id/complete       (Convert reservation to actual stock)
+PUT    /reservations/:id/cancel         (Cancel reservation)
+GET    /reservations/location/:location_id
+GET    /reservations/status/:status     (ACTIVE, COMPLETED, CANCELLED)
+
+PICKING STOCK STATUS:
+GET    /picking-stock
+GET    /picking-stock/low               (Get SKUs below min_picking_threshold)
+GET    /picking-stock/sku/:sku_id
+PUT    /picking-stock/:sku_id/:location_id  (Manual update)
+
+OPERATIONS (Simplified Endpoints):
+POST   /operations/receipt              (Execute receipt + record in ledger + create reservation)
+POST   /operations/transfer             (Execute storage assignment + record)
+POST   /operations/replenishment        (Execute VRAC → PICKING + record)
+POST   /operations/picking              (Execute picking + record)
+POST   /operations/delivery             (Execute delivery + record)
+
+AI SERVICES:
+POST   /ai/forecast                     (Trigger forecast for specific date)
+POST   /ai/optimize/storage             (Get storage suggestion for SKU - VRAC vs PICKING)
+POST   /ai/optimize/picking             (Get optimized picking route)
+POST   /ai/optimize/replenishment       (Get optimal VRAC → PICKING replenishment plan)
+GET    /ai/decisions
+GET    /ai/decisions/:id
+GET    /ai/performance
+GET    /ai/weights
+PUT    /ai/weights/:id                  (Admin only - adjust model weights)
+GET    /ai/decisions/type/:type         (Filter by: STORAGE_ASSIGNMENT, PREPARATION_GENERATION, PICKING_OPTIMIZATION, REPLENISHMENT_GENERATION)
+
+OVERRIDES:
+GET    /overrides                       (Admin/Supervisor)
+POST   /overrides
+GET    /overrides/:id
+GET    /overrides/statistics            (Override patterns analysis)
+
+SYNC:
+POST   /sync/push
+GET    /sync/pull
+GET    /sync/status
+
+REPORTS:
+GET    /reports/stock
+GET    /reports/movements
+GET    /reports/forecast-accuracy
+GET    /reports/ai-performance
+GET    /reports/overrides
+GET    /reports/daily-summary/:daily_operation_id
+GET    /reports/chariot-utilization
+GET    /reports/zone-utilization        (Stock distribution across zones)
+GET    /reports/replenishment-frequency
+GET    /reports/picking-stock-health    (SKUs approaching threshold)
+GET    /reports/capacity-utilization    (Track capacity usage trends)
+GET    /reports/reservation-metrics     (Active vs completed reservations)
+
+================================================================================
+PART 7: UI/UX REQUIREMENTS
+================================================================================
+
+GENERAL:
+✓ Material Design / iOS Human Interface Guidelines
+✓ Dark mode support
+✓ Responsive layouts for tablets
+✓ Accessibility (WCAG 2.1 AA)
+✓ Offline mode indicator (prominent)
+✓ Loading states for all async operations
+✓ Confirmation dialogs for destructive actions
+
+EMPLOYEE VIEW:
+✓ Dashboard: Today's assigned operations
+✓ Operation detail screens (Receipt, Transfer, Picking, Delivery)
+✓ Barcode scanner integration
+✓ Step-by-step guided workflows
+✓ No visibility into AI decisions or overrides
+✓ Clear task completion indicators
+
+SUPERVISOR VIEW:
+✓ Dashboard: Pending AI decisions to validate
+✓ Real-time warehouse map with:
+  - Employee locations
+  - Chariot positions
+  - Congestion heatmap
+  - Active operations
+✓ AI decision review screens with:
+  - Original AI suggestion
+  - Confidence score
+  - Override option with justification field
+✓ Operation monitoring
+✓ Override history
+
+ADMIN VIEW:
+✓ Full system dashboard:
+  - User management
+  - Warehouse configuration
+  - AI performance metrics
+  - Audit logs
+✓ All supervisor features
+✓ System configuration screens
+✓ Advanced analytics and reports
+
+COLOR CODING:
+- AI Generated: Blue
+- Validated: Green
+- Overridden: Orange
+- Failed: Red
+- Pending: Yellow
+
+================================================================================
+PART 8: PERFORMANCE REQUIREMENTS
+================================================================================
+
+✓ API response time: < 200ms for simple queries, < 1s for complex
+✓ UI rendering: 60fps smooth animations
+✓ Offline mode activation: < 100ms
+✓ Sync completion: < 5s for 100 queued operations
+✓ Database queries: Optimized with indexes (see schema)
+✓ Image loading: Lazy loading with placeholders
+✓ List virtualization for long lists (react-window / flutter ListView.builder)
+
+SCALABILITY:
+✓ Handle 1000+ SKUs
+✓ Handle 10000+ locations
+✓ Handle 100+ concurrent users
+✓ 1M+ STOCK_LEDGER records
+✓ Support warehouse operations with 50+ employees
+
+================================================================================
+PART 9: SECURITY REQUIREMENTS
+================================================================================
+
+✓ Password hashing: bcrypt with salt rounds >= 12
+✓ JWT tokens: Short-lived access tokens (15min) + refresh tokens (7 days)
+✓ HTTPS only for API communication
+✓ SQL injection prevention: Use parameterized queries
+✓ XSS prevention: Sanitize all user inputs
+✓ CSRF protection: CSRF tokens for state-changing operations
+✓ Rate limiting: 100 requests/minute per user
+✓ Role-based access control: Server-side enforcement
+✓ Audit logging: All sensitive operations
+✓ Secure storage: Encrypted local database (SQLCipher)
+
+================================================================================
+PART 10: AI IMPLEMENTATION GUIDELINES
+================================================================================
+
+FORECASTING MODEL:
+Algorithm: Time series forecasting (ARIMA, Prophet, or LSTM)
+Input Features:
+  - Historical delivery quantities (FORECAST_HISTORY)
+  - Day of week, seasonality
+  - SKU characteristics (weight, frequency)
+Output: Predicted demand per SKU
+Training: Batch training weekly with FORECAST_HISTORY
+Evaluation: MAE (Mean Absolute Error)
+
+STORAGE OPTIMIZATION:
+Algorithm: Multi-criteria decision making (weighted scoring)
+Scoring Function:
+  storage_score = 
+    - w1 * euclidean_distance(receipt_zone, storage_location)
+    + w2 * floor_penalty(weight, floor_level)
+    + w3 * demand_frequency_bonus(sku_id)
+    - w4 * congestion_penalty(location_traffic)
+    + w5 * availability_score(empty_slots)
+
+Weights (w1-w5) stored in AI_MODEL_WEIGHTS
+Adaptive: Adjust weights based on override patterns
+
+PICKING OPTIMIZATION:
+Algorithm: Nearest Neighbor + 2-opt improvement (TSP)
+Steps:
+  1. Start from expedition zone
+  2. Find nearest unpicked item
+  3. Add to route
+  4. Repeat until all items picked
+  5. Return to expedition zone
+  6. Apply 2-opt to improve route
+  7. Store sequence in PICKING_ORDER_ITEMS.sequence_number
+
+Path Collision Avoidance:
+  - Check CHARIOT_ASSIGNMENTS for overlapping time windows
+  - Adjust routes if paths intersect
+
+ADAPTIVE LEARNING:
+Monitor Override Patterns:
+  - If location X is overridden 5+ times → decrease its weight
+  - If supervisor prefers floor Y → increase its weight
+Update Frequency: Weekly batch updates
+Metrics to Track:
+  - Override rate per decision type (from AI_OVERRIDES)
+  - Forecast accuracy (MAE from SKU_FORECAST)
+  - Route efficiency (total_distance: AI vs override)
+
+Learning Algorithm:
+```javascript
+async function adaptWeights() {
+  // 1. Query overrides from last week
+  const overrides = await db
+    .select('ai_decision_id', 'decision_type', 'new_decision')
+    .from('AI_OVERRIDES')
+    .where('created_at', '>=', oneWeekAgo);
+
+  // 2. Analyze patterns
+  const locationOverrides = overrides
+    .filter(o => o.decision_type === 'STORAGE_ASSIGNMENT')
+    .map(o => JSON.parse(o.new_decision).location_id);
+  
+  const overrideFrequency = countFrequency(locationOverrides);
+
+  // 3. Adjust weights
+  for (const [locationId, count] of overrideFrequency) {
+    if (count >= 5) {
+      // Decrease weight for AI-rejected locations
+      await decreaseWeight('congestion_penalty', 0.05);
+      await increaseWeight('demand_score', 0.05);
+    }
+  }
+
+  // 4. Evaluate forecast accuracy
+  const forecasts = await db
+    .select('predicted_quantity', 'actual_quantity')
+    .from('SKU_FORECAST')
+    .where('actual_quantity', 'IS NOT', null);
+  
+  const mae = forecasts.reduce((sum, f) => 
+    sum + Math.abs(f.predicted_quantity - f.actual_quantity), 0
+  ) / forecasts.length;
+
+  // 5. Store performance metric
+  await db.insert('AI_PERFORMANCE_METRICS').values({
+    model_type: 'FORECAST',
+    metric_name: 'MAE',
+    value: mae
+  });
+}
+```
+
+================================================================================
+PART 11: DEPLOYMENT REQUIREMENTS
+================================================================================
+
+MOBILE APP:
+✓ Build APK for Android
+✓ Support Android 8.0+ (API level 26+)
+✓ App size: < 50MB
+✓ Permissions: Camera (barcode), Location (employee tracking), Storage
+
+BACKEND:
+✓ Containerized with Docker
+✓ Environment variables for configuration
+✓ Database migrations system (Knex, TypeORM, or Alembic)
+✓ Logging: Structured logs (Winston, Loguru)
+✓ Monitoring: Health check endpoint (/health)
+
+DATABASE:
+✓ MySQL 8.0+ or PostgreSQL 14+
+✓ Automated backups (daily)
+✓ Replication for high availability (optional)
+
+CI/CD:
+✓ Automated testing on commit
+✓ Automated build pipeline
+✓ Staging environment for testing
+
+================================================================================
+PART 12: DOCUMENTATION REQUIREMENTS
+================================================================================
+
+CODE DOCUMENTATION:
+✓ Function/method comments with JSDoc or equivalent
+✓ README.md with setup instructions
+✓ API documentation (Swagger/OpenAPI)
+✓ Database schema diagram (ERD)
+✓ Architecture diagram
+
+TECHNICAL REPORT (max 4 pages):
+✓ AI algorithms explanation
+✓ Optimization logic
+✓ Baseline vs proposed solution comparison
+✓ Evaluation methodology
+✓ Performance metrics
+
+USER DOCUMENTATION:
+✓ User manual for each role
+✓ Workflow diagrams
+✓ Screenshots/screen recordings
+
+================================================================================
+PART 13: HACKATHON DELIVERABLES CHECKLIST
+================================================================================
+
+REQUIRED SUBMISSIONS:
+□ APK file for mobile WMS app
+□ UI/UX prototype (Figma or similar)
+□ User workflow diagrams for:
+  □ Warehouse Employee
+  □ Warehouse Supervisor  
+  □ Warehouse Admin
+□ AI implementation with:
+  □ Multi-service agent (forecasting + optimization)
+  □ Decision flow diagram
+  □ Comparative analysis (naive vs proposed)
+  □ Technical documentation (max 4 pages)
+□ Source code repository (GitHub)
+□ Database setup scripts
+□ README with setup instructions
+
+================================================================================
+PART 14: QUALITY ASSURANCE CHECKLIST
+================================================================================
+
+FUNCTIONAL TESTING:
+□ All CRUD operations work correctly
+□ Role-based access control enforced
+□ AI generates valid suggestions
+□ Overrides require justification
+□ Stock ledger is immutable
+□ Transactions are atomic
+□ Offline mode works for 4+ hours
+□ Sync resolves conflicts correctly
+□ Heatmap updates in real-time
+□ All operations traceable in logs
+
+DATA INTEGRITY:
+□ No negative stock possible
+□ Version conflicts handled correctly
+□ Duplicate location codes prevented
+□ Foreign key constraints enforced
+□ Triggers update STOCK correctly
+
+PERFORMANCE:
+□ API responses within SLA
+□ UI renders smoothly (60fps)
+□ Database queries use indexes
+□ Large lists virtualized
+□ Images lazy loaded
+
+SECURITY:
+□ Passwords hashed securely
+□ JWT tokens validated
+□ SQL injection prevented
+□ XSS attacks prevented
+□ HTTPS enforced
+□ Sensitive data encrypted
+
+USABILITY:
+□ Clear error messages
+□ Loading indicators present
+□ Offline status visible
+□ Confirmations for destructive actions
+□ Intuitive navigation
+□ Accessible for users with disabilities
+
+================================================================================
+END OF PROMPT
+================================================================================
+
+FINAL NOTES FOR AI AGENT:
+
+1. Start with database setup and schema creation
+2. Build backend API with authentication first
+3. Implement core CRUD operations
+4. Add offline sync mechanism
+5. Build mobile UI screens role by role
+6. Integrate AI services last
+7. Test thoroughly with all roles
+8. Document everything
+
+Remember: This is an enterprise-grade system. Focus on:
+- Data integrity
+- Auditability  
+- Scalability
+- Security
+- User experience per role
+
+Good luck building the MobAI Warehouse Management System!
+
+================================================================================
+ARCHITECTURAL IMPROVEMENTS SUMMARY (BON-BASED WORKFLOW)
+================================================================================
+
+KEY ENHANCEMENTS OVER BASIC WMS:
+
+1. DAILY OPERATION CONTEXT (DAILY_OPERATION)
+   ✓ Every operation day is explicitly modeled
+   ✓ Fixed chariot constraint enforced per day
+   ✓ Enables daily performance comparison
+   ✓ Realistic resource scarcity simulation
+   ✓ Hackathon differentiator: Shows understanding of real constraints
+
+2. DELIVERY-CENTRIC ARCHITECTURE
+   ✓ delivery_id is the central linking key
+   ✓ Traces complete lifecycle: Preparation → Picking → Delivery
+   ✓ Industry-standard BON document naming
+   ✓ Mirrors real warehouse operations
+   ✓ Hackathon differentiator: Professional terminology
+
+3. DOCUMENT TRACEABILITY (reference_document_type + reference_document_id)
+   ✓ STOCK_LEDGER links to source BON document
+   ✓ Complete audit trail: which document caused which movement
+   ✓ Supports compliance and accountability
+   ✓ Enables root-cause analysis for discrepancies
+   ✓ Hackathon differentiator: Enterprise audit capability
+
+4. CHARIOT RESOURCE SCHEDULING
+   ✓ Finite chariot pool (DAILY_OPERATION.total_chariots_available)
+   ✓ CHARIOT_ASSIGNMENTS tracks allocation for PICKING + REPLENISHMENT
+   ✓ Prevents over-allocation
+   ✓ Realistic queuing and scheduling
+   ✓ Hackathon differentiator: Real-world constraint modeling
+
+5. DUAL HEATMAP TRACKING
+   ✓ LOCATION_TRAFFIC: Global cumulative stats
+   ✓ DAILY_LOCATION_TRAFFIC: Per-day linked to daily_operation_id
+   ✓ Supports trend analysis and daily comparison
+   ✓ AI uses for congestion-aware decisions
+   ✓ Hackathon differentiator: Advanced analytics capability
+
+6. FORECASTING WITH ACCOUNTABILITY (SKU_FORECAST)
+   ✓ Stores predicted_quantity AND actual_quantity
+   ✓ Calculates error_value for learning
+   ✓ Linked to daily_operation_id for context
+   ✓ Enables continuous improvement
+   ✓ Hackathon differentiator: Measurable AI performance
+
+7. INDUSTRIAL WORKFLOW FIDELITY
+   ✓ BON_COMMANDE: Standard receiving document format
+   ✓ BON_PREPARATION: Outgoing planning document
+   ✓ BON_PICKING: Execution route document
+   ✓ BON_LIVRAISON: Delivery validation document
+   ✓ **BON_REPLENISHMENT: VRAC → PICKING transfer document (NEW)**
+   ✓ Hackathon differentiator: Real industry terminology
+
+8. AI TRANSPARENCY & LEARNING
+   ✓ AI_DECISIONS stores original AI output
+   ✓ AI_OVERRIDES stores supervisor corrections separately
+   ✓ System learns from overrides (adaptive weights)
+   ✓ Confidence scores guide supervisor decisions
+   ✓ Hackathon differentiator: Explainable AI with feedback loop
+
+9. ZONE-BASED ARCHITECTURE (NEW - MAJOR ENHANCEMENT)
+   ✓ Replaces simple location types with structured ZONES table
+   ✓ Four functional zones: RECEIVING, VRAC, PICKING, EXPEDITION
+   ✓ VRAC = Bulk storage for high-capacity, low-frequency items
+   ✓ PICKING = Intermediate storage optimized for order fulfillment
+   ✓ Enforced flow: VRAC → PICKING → EXPEDITION (blocks direct VRAC → EXPEDITION)
+   ✓ Zone-specific optimization logic
+   ✓ Scalable: Multiple zones per type per warehouse
+   ✓ Hackathon differentiator: Multi-tier storage modeling
+
+10. INTELLIGENT REPLENISHMENT SYSTEM (NEW - MAJOR ENHANCEMENT)
+    ✓ Automated replenishment triggers when picking stock < min_picking_threshold
+    ✓ BON_REPLENISHMENT documents VRAC → PICKING transfers
+    ✓ AI optimizes replenishment routes (separate from picking routes)
+    ✓ Chariot allocation for replenishment operations
+    ✓ PICKING_STOCK_STATUS table for real-time monitoring
+    ✓ Prevents delivery delays due to insufficient picking stock
+    ✓ Supervisor oversight with override capability
+    ✓ Hackathon differentiator: Proactive stock management
+
+11. LOCATION RESERVATION SYSTEM (NEW - MAJOR ENHANCEMENT)
+    ✓ LOCATION_RESERVATIONS table tracks "assigned but not yet occupied" space
+    ✓ Prevents overbooking: current_capacity_used + reserved_capacity <= capacity
+    ✓ Three-state location status: FREE → ASSIGNED → OCCUPIED
+    ✓ Reservation types: RECEPTION, REPLENISHMENT, TRANSFER
+    ✓ Automatic conversion from reservation to actual stock upon completion
+    ✓ Supports concurrent planning without physical conflicts
+    ✓ Hackathon differentiator: Advanced capacity planning
+
+12. CAPACITY-AWARE OPERATIONS (NEW - MAJOR ENHANCEMENT)
+    ✓ Every location has capacity, current_capacity_used, reserved_capacity
+    ✓ AI storage decisions factor in available capacity
+    ✓ CHECK constraints prevent capacity violations
+    ✓ Real-time capacity monitoring dashboard
+    ✓ Reservation system prevents double-booking
+    ✓ Dynamic status updates via triggers
+    ✓ Hackathon differentiator: Real warehouse capacity management
+
+13. SKU-LEVEL PICKING CONFIGURATION (NEW)
+    ✓ min_picking_threshold: Trigger replenishment when below this
+    ✓ max_picking_capacity: Maximum allowed in picking zone
+    ✓ is_bulk: Automatically assign to VRAC if true
+    ✓ Enables SKU-specific replenishment strategies
+    ✓ Adaptive thresholds based on demand patterns
+    ✓ Hackathon differentiator: Fine-grained inventory control
+
+TECHNICAL EXCELLENCE MARKERS:
+
+Schema Design:
+✓ Full normalization (3NF minimum)
+✓ Proper indexing for query performance (including zone-based queries)
+✓ Foreign key constraints for referential integrity
+✓ Optimistic locking (version field) for concurrency
+✓ **CHECK constraints for capacity validation**
+✓ Triggers for automated consistency (stock, capacity, status)
+✓ InnoDB engine for transaction support
+
+Data Integrity:
+✓ Immutable ledger (append-only STOCK_LEDGER)
+✓ Atomic transactions for multi-step operations
+✓ Version-based conflict detection
+✓ Constraint checks (no negative stock, no capacity overflow)
+✓ Cascading deletes for cleanup
+✓ **Reservation-to-stock conversion guarantees**
+
+AI Integration:
+✓ Weighted multi-criteria optimization
+✓ TSP algorithm for picking routes
+✓ **Separate TSP for replenishment routes**
+✓ Time-series forecasting
+✓ Congestion-aware routing
+✓ **Capacity-aware storage assignment**
+✓ **Automated replenishment triggers**
+✓ Adaptive learning from overrides
+
+Scalability:
+✓ Indexed queries for large datasets
+✓ Partitioning-ready (daily_operation_id)
+✓ Efficient heatmap aggregation
+✓ Async sync queue for offline
+✓ Optimized for 1M+ ledger records
+✓ **Zone-based query optimization**
+✓ **Reservation cleanup procedures**
+
+HACKATHON WINNING FACTORS:
+
+✅ Industrial Realism: BON terminology + daily constraints + zone-based workflow
+✅ Resource Scarcity: Fixed chariot modeling + capacity constraints
+✅ Complete Traceability: Document references in ledger + zone-aware tracking
+✅ Explainable AI: Decision storage + override learning + replenishment logic
+✅ Performance Measurement: Forecast accuracy + replenishment efficiency tracking
+✅ Role Abstraction: Employees see final decisions only
+✅ Audit Compliance: Immutable audit trail + reservation history
+✅ Scalability: Indexed, normalized, efficient + zone-partitioned
+✅ Offline-First: Queue-based sync with conflict resolution
+✅ Real-Time Updates: WebSocket + heatmap + capacity monitoring
+✅ **Multi-Tier Storage**: VRAC + PICKING separation with enforced flow
+✅ **Proactive Management**: Automated replenishment prevents stockouts
+✅ **Capacity Planning**: Reservation system prevents overbooking
+✅ **Operational Intelligence**: Zone utilization + picking stock health monitoring
+
+COMPARISON TABLE:
+
+| Feature | Basic WMS | Standard WMS | MobAI WMS (VRAC-Enhanced) |
+|---------|-----------|--------------|----------------------------|
+| Daily Context | ❌ | ❌ | ✅ DAILY_OPERATION |
+| Resource Constraints | ❌ | ❌ | ✅ Fixed chariots + capacity |
+| Document Traceability | ❌ | Partial | ✅ Complete with BON references |
+| Heatmap Tracking | ❌ | ❌ | ✅ Dual (global + daily) |
+| Forecast Accountability | ❌ | ❌ | ✅ SKU_FORECAST with error |
+| AI Learning | ❌ | ❌ | ✅ Adaptive weights |
+| Role Abstraction | Partial | Partial | ✅ Full transparency control |
+| Industry Terminology | Generic | Partial | ✅ BON-based documents |
+| Chariot Scheduling | ❌ | Partial | ✅ Queue + conflict detection |
+| Audit Trail | ❌ | Partial | ✅ Complete with justifications |
+| **Zone Architecture** | ❌ | Basic | ✅ **VRAC + PICKING separation** |
+| **Replenishment System** | ❌ | Manual | ✅ **Automated AI-driven** |
+| **Capacity Management** | ❌ | ❌ | ✅ **Reservation + real-time tracking** |
+| **Flow Enforcement** | ❌ | ❌ | ✅ **VRAC → PICKING → EXPEDITION** |
+| **Picking Stock Monitoring** | ❌ | ❌ | ✅ **Real-time thresholds** |
+
+IMPLEMENTATION PRIORITY (UPDATED):
+
+Phase 1 (Core):
+1. Database schema creation (including ZONES, LOCATION_RESERVATIONS)
+2. Authentication + user management
+3. Warehouse + zone + location CRUD
+4. SKU + stock management (including picking thresholds)
+5. STOCK_LEDGER with triggers (including capacity updates)
+
+Phase 2 (Operations):
+1. DAILY_OPERATION initialization
+2. BON_COMMANDE (receipt with reservations)
+3. Storage assignment (AI + override with zone logic)
+4. BON_PREPARATION generation (AI forecast)
+5. **BON_REPLENISHMENT (VRAC → PICKING automation)**
+6. BON_PICKING optimization (AI routing with zone validation)
+7. BON_LIVRAISON validation
+
+Phase 3 (AI):
+1. Storage optimization algorithm (zone-aware)
+2. **Replenishment optimization (VRAC source + PICKING destination selection)**
+3. Picking route optimization (TSP)
+4. Demand forecasting (time series)
+5. Adaptive learning (weight adjustment + replenishment tuning)
+6. Performance metrics tracking
+
+Phase 4 (Advanced):
+1. Real-time heatmap visualization (zone-based)
+2. **Capacity utilization dashboard**
+3. **Picking stock monitoring dashboard**
+4. Chariot collision avoidance
+5. Offline sync with conflict resolution
+6. Supervisor dashboard (cartography + zone overlay)
+7. **Reservation management interface**
+8. Analytics and reporting (zone utilization + replenishment efficiency)
+
+This architecture demonstrates:
+✓ Deep understanding of logistics operations (multi-tier storage)
+✓ Enterprise-grade engineering practices (capacity management)
+✓ Real-world constraint modeling (VRAC → PICKING flow)
+✓ Explainable and adaptive AI (replenishment triggers)
+✓ Complete auditability and compliance (reservation tracking)
+✓ Scalable and performant design (zone-based optimization)
+✓ **Proactive warehouse management (automated replenishment)**
+✓ **Advanced capacity planning (reservation system)**
+✓ **Industrial-grade workflow enforcement (zone-based flow rules)**
+
+Perfect for winning a hackathon focused on AI-powered WMS! 🏆
+
+**CRITICAL SUCCESS FACTORS FOR JURY PRESENTATION:**
+
+1. **Demonstrate Live Replenishment**: Show picking stock dropping below threshold → AI generates BON_REPLENISHMENT → Employee executes VRAC → PICKING transfer
+2. **Show Capacity Intelligence**: Display reservation preventing overbooking + real-time capacity heatmap
+3. **Explain Zone Flow**: Emphasize VRAC → PICKING → EXPEDITION enforcement (blocks invalid flows)
+4. **Highlight AI Decision Types**: Storage, Preparation, Picking, **Replenishment** (4 AI services)
+5. **Show Multi-State Locations**: Demo FREE → ASSIGNED (reserved) → OCCUPIED (physical stock)
+6. **Present Comparative Metrics**: Basic WMS vs Standard WMS vs MobAI WMS (show table above)
+
+================================================================================
+END OF ENHANCED PROMPT WITH VRAC ZONE & REPLENISHMENT ARCHITECTURE
+================================================================================
