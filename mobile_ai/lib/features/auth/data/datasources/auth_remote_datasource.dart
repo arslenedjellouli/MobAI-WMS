@@ -1,7 +1,7 @@
 import 'package:mobile_ai/core/api/api_client.dart';
 
 abstract class AuthRemoteDataSource {
-  Future<Map<String, dynamic>> login(String username, String password);
+  Future<Map<String, dynamic>> login(String email, String password);
   Future<void> logout();
 }
 
@@ -11,11 +11,11 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
   AuthRemoteDataSourceImpl({required this.client});
 
   @override
-  Future<Map<String, dynamic>> login(String username, String password) async {
+  Future<Map<String, dynamic>> login(String email, String password) async {
     final response = await client.post(
-      '/auth/login/', // Verify endpoint path in backend
+      '/api/v1/auth/login/',
       data: {
-        'username': username,
+        'email': email,
         'password': password,
       },
     );

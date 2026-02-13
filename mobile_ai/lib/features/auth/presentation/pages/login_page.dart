@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -10,30 +12,80 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _idController = TextEditingController();
-  final _pinController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _rememberMe = false;
-  bool _obscurePin = true;
-  String? _idError;
-  String? _pinError;
+  bool _obscurePassword = true;
+  String? _emailError;
+  String? _passwordError;
+  bool _isLoading = false;
+  late final AuthRepository _authRepository;
+
+  @override
+  void initState() {
+    super.initState();
+    _authRepository = GetIt.I<AuthRepository>();
+  }
 
   @override
   void dispose() {
-    _idController.dispose();
-    _pinController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
-  void _validateAndSubmit() {
+  Future<void> _validateAndSubmit() async {
     setState(() {
-      _idError = _idController.text.isEmpty ? 'Employer ID is required' : null;
-      _pinError = _pinController.text.isEmpty ? 'PIN is required' : null;
+      _emailError = _emailController.text.isEmpty ? 'Email is required' : null;
+      _passwordError = _passwordController.text.isEmpty ? 'Password is required' : null;
     });
 
-    if (_idError == null && _pinError == null) {
-      // TODO: Proceed with login
-      print('Login attempt with ID: ${_idController.text}, PIN: ${_pinController.text}');
+    if (_emailError == null && _passwordError == null) {
+      await _performLogin();
     }
+  }
+
+  Future<void> _performLogin() async {
+    setState(() => _isLoading = true);
+
+    final result = await _authRepository.login(
+      _emailController.text.trim(),
+      _passwordController.text,
+    );
+
+    setState(() => _isLoading = false);
+
+    result.fold(
+      (failure) {
+        // Show error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(failure.message),
+            backgroundColor: const Color(0xFFDC2626),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      },
+      (user) {
+        // Navigate to dashboard on success
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Welcome, ${user.fullName}!'),
+            backgroundColor: const Color(0xFF10B981),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        // Delay navigation to show success message
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              AppRoutes.dashboard,
+              (route) => false,
+            );
+          }
+        });
+      },
+    );
   }
 
   @override
@@ -70,7 +122,7 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 48),
               Text(
-                'Employer ID',
+                'Email Address',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -79,15 +131,15 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _idController,
-                hintText: 'Enter your unique ID',
-                keyboardType: TextInputType.text,
-                errorText: _idError,
-                onChanged: (_) => setState(() => _idError = null),
+                controller: _emailController,
+                hintText: 'Enter your email',
+                keyboardType: TextInputType.emailAddress,
+                errorText: _emailError,
+                onChanged: (_) => setState(() => _emailError = null),
               ),
-              if (_idError != null) ...[const SizedBox(height: 4),
+              if (_emailError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _idError!,
+                  _emailError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,
@@ -97,7 +149,7 @@ class _LoginPageState extends State<LoginPage> {
               ],
               const SizedBox(height: 20),
               Text(
-                'PIN',
+                'Password',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -106,23 +158,23 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _pinController,
-                hintText: 'Enter your PIN',
-                keyboardType: TextInputType.number,
-                obscureText: _obscurePin,
-                errorText: _pinError,
-                onChanged: (_) => setState(() => _pinError = null),
+                controller: _passwordController,
+                hintText: 'Enter your password',
+                keyboardType: TextInputType.text,
+                obscureText: _obscurePassword,
+                errorText: _passwordError,
+                onChanged: (_) => setState(() => _passwordError = null),
                 suffixIcon: IconButton(
-                  onPressed: () => setState(() => _obscurePin = !_obscurePin),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                   icon: Icon(
-                    _obscurePin ? Icons.visibility_off : Icons.visibility,
+                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
                     color: const Color(0xFF94A3B8),
                   ),
                 ),
               ),
-              if (_pinError != null) ...[const SizedBox(height: 4),
+              if (_passwordError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _pinError!,
+                  _passwordError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,
@@ -183,29 +235,40 @@ class _LoginPageState extends State<LoginPage> {
               SizedBox(
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: _validateAndSubmit,
+                  onPressed: _isLoading ? null : _validateAndSubmit,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0093B2),
                     foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFFCBD5E1),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Connect',
-                        style: GoogleFonts.manrope(
-                          textStyle: textTheme.bodyLarge,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 24,
+                          width: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Connect',
+                              style: GoogleFonts.manrope(
+                                textStyle: textTheme.bodyLarge,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.arrow_forward_rounded, size: 18),
+                          ],
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(Icons.arrow_forward_rounded, size: 18),
-                    ],
-                  ),
                 ),
               ),
               const SizedBox(height: 48),

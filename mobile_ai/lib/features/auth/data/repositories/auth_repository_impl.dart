@@ -8,7 +8,7 @@ import 'package:mobile_ai/core/errors/failures.dart';
 import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
 
 abstract class AuthRepository {
-  Future<Either<Failure, UserCollection>> login(String username, String password);
+  Future<Either<Failure, UserCollection>> login(String email, String password);
   Future<Either<Failure, void>> logout();
   Future<Either<Failure, UserCollection?>> getCurrentUser();
 }
@@ -25,10 +25,10 @@ class AuthRepositoryImpl implements AuthRepository {
   });
 
   @override
-  Future<Either<Failure, UserCollection>> login(String username, String password) async {
+  Future<Either<Failure, UserCollection>> login(String email, String password) async {
     try {
       // 1. Call API
-      final result = await remoteDataSource.login(username, password);
+      final result = await remoteDataSource.login(email, password);
       final token = result['access'] as String?; // Adjust based on JWT response
       final userData = result['user'] as Map<String, dynamic>?;
 
