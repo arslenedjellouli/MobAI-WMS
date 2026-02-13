@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:mobile_ai/features/dashboard/presentation/pages/employee_dashboard_page.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_dashboard_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/access_help_page.dart';
@@ -20,6 +21,7 @@ class AppRoutes {
 
   // Dashboard Routes
   static const String dashboard = '/dashboard';
+  static const String adminDashboard = '/admin-dashboard';
 
   // Daily Operation Routes
   static const String dailyOperation = '/daily-operation';
@@ -104,6 +106,11 @@ class AppRoutes {
           builder: (_) => const EmployeeDashboardPage(),
         );
 
+      case adminDashboard:
+        return MaterialPageRoute(
+          builder: (_) => const AdminDashboardPage(),
+        );
+
       case bonPickings:
         return MaterialPageRoute(
           builder: (_) => _placeholder('Bon Pickings', 'List of picking orders'),
@@ -141,3 +148,4 @@ class AppRoutes {
     );
   }
 }
+
