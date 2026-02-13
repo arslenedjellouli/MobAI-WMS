@@ -39,6 +39,12 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
       }
     } on DioException catch (e) {
       print('🌐 [AuthRemoteDataSource] DioException caught');
+      print('   Status Code: ${e.response?.statusCode}');
+      print('   Response Data: ${e.response?.data}');
+      print('   Response Type: ${e.response?.data.runtimeType}');
+      print('   Error Type: ${e.type}');
+      print('   Error Message: ${e.message}');
+      
       if (e.type == DioExceptionType.connectionTimeout) {
         print('❌ [AuthRemoteDataSource] Connection Timeout - Backend not responding');
         print('   Check: Is Django backend running on http://10.0.2.2:8000?');
@@ -47,8 +53,29 @@ class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
         print('❌ [AuthRemoteDataSource] Receive Timeout - Backend too slow');
         throw Exception('Receive timeout: Backend server is responding too slowly.');
       } else if (e.response?.statusCode == 400 || e.response?.statusCode == 401) {
-        print('❌ [AuthRemoteDataSource] Invalid credentials');
-        throw Exception(e.response?.data['detail'] ?? 'Invalid email or password');
+        print('❌ [AuthRemoteDataSource] Invalid credentials (400/401)');
+        
+        // Try to extract error message
+        String errorMessage = 'Invalid email or password';
+        if (e.response?.data != null) {
+          if (e.response!.data is Map) {
+            final data = e.response!.data as Map<String, dynamic>;
+            errorMessage = data['detail'] ?? data['error'] ?? data['message'] ?? errorMessage;
+            
+            // Check for field errors
+            if (data.containsKey('email')) {
+              errorMessage = 'Email: ${data['email']}';
+            } else if (data.containsKey('password')) {
+              errorMessage = 'Password: ${data['password']}';
+            } else if (data.containsKey('non_field_errors')) {
+              errorMessage = data['non_field_errors'].toString();
+            }
+          } else {
+            errorMessage = e.response!.data.toString();
+          }
+        }
+        print('   Error Message: $errorMessage');
+        throw Exception(errorMessage);
       } else {
         print('❌ [AuthRemoteDataSource] Error: ${e.message}');
         print('   Type: ${e.type}');

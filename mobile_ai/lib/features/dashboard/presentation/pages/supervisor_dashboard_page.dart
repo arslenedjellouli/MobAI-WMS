@@ -14,8 +14,12 @@ import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_queue_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
 import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
@@ -36,10 +40,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   final SyncService _syncService = sl<SyncService>();
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
   final Uuid _uuid = const Uuid();
+  final PageController _reportedPageController = PageController(
+    viewportFraction: 0.96,
+  );
 
   AppBottomTab _currentView = AppBottomTab.home;
-  TaskTypeFilter _selectedFilter = TaskTypeFilter.receipt;
-  TaskTypeFilter _searchFilter = TaskTypeFilter.receipt;
+  ProposedTaskFilter _selectedFilter = ProposedTaskFilter.forecast;
+  TaskTypeFilter _searchFilter = TaskTypeFilter.reports;
   bool _isLoading = true;
   bool _isSyncing = false;
 
@@ -54,9 +61,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   final List<_HistoryAction> _historyActions = [];
 
   int _receiptCount = 0;
-  int _storageCount = 0;
+  int _transferCount = 0;
   int _pickingCount = 0;
-  int _deliveryCount = 0;
+  int _currentReportedPage = 0;
 
   StreamSubscription<NetworkStatus>? _networkSub;
 
@@ -69,6 +76,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   @override
   void dispose() {
     _networkSub?.cancel();
+    _reportedPageController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -102,58 +110,120 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final replenish = await _isar.bonReplenishmentCollections.where().findAll();
     final picking = await _isar.bonPickingCollections.where().findAll();
     final livraison = await _isar.bonLivraisonCollections.where().findAll();
+    final reports = await _isar.taskReportCollections.where().findAll();
+
+    // Only load EmployeeTasks assigned BY this supervisor (not all tasks)
+    final supervisorBackendId = user?.backendId;
+    final allEmployeeTasks = await _isar.employeeTaskCollections.where().findAll();
+    final employeeTasks = allEmployeeTasks
+      .where((task) =>
+        supervisorBackendId != null &&
+        supervisorBackendId.isNotEmpty &&
+        task.assignedByUserId == supervisorBackendId)
+      .toList();
 
     final reported = <_TaskCardData>[];
     final proposed = <_TaskCardData>[];
+    final history = await _loadPersistedHistory();
+    final taskByBackendId = <String, _TaskCardData>{};
 
-    int receiptCount = 0;
-    int storageCount = 0;
-    int pickingCount = 0;
-    int deliveryCount = 0;
+    void registerTask(_TaskCardData task) {
+      final backendId = task.backendId;
+      if (backendId == null || backendId.isEmpty) return;
+      taskByBackendId[backendId] = task;
+    }
+
+    // Process Employee Tasks
+    for (final task in employeeTasks) {
+      final taskCard = _taskFromEmployeeTask(task);
+      registerTask(taskCard);
+      
+      if (task.status == EmployeeTaskStatus.pending) {
+        proposed.add(taskCard);
+      }
+    }
 
     for (final item in commandes) {
-      receiptCount++;
       final task = _taskFromCommande(item);
-      // Check if notes contain "ISSUE_REPORTED" for reported tasks
-      if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
-        reported.add(task);
-      } else if (item.status == BonCommandeStatus.pending) {
+      registerTask(task);
+      if (item.status == BonCommandeStatus.pending) {
         proposed.add(task);
       }
     }
 
     for (final item in replenish) {
-      storageCount++;
       final task = _taskFromReplenishment(item);
-      if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
-        reported.add(task);
-      } else if (item.status == BonReplenishmentStatus.pending) {
+      registerTask(task);
+      if (item.status == BonReplenishmentStatus.pending) {
         proposed.add(task);
       }
     }
 
     for (final item in picking) {
-      pickingCount++;
       final task = _taskFromPicking(item);
-      if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
-        reported.add(task);
-      } else if (item.status == BonPickingStatus.pending) {
+      registerTask(task);
+      if (item.status == BonPickingStatus.pending) {
         proposed.add(task);
       }
     }
 
     for (final item in livraison) {
-      deliveryCount++;
       final task = _taskFromLivraison(item);
-      if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
-        reported.add(task);
-      } else if (item.status == BonLivraisonStatus.idle) {
+      registerTask(task);
+      if (item.status == BonLivraisonStatus.idle) {
         proposed.add(task);
       }
     }
 
+    final reportTasks = reports
+        .where(
+          (report) =>
+              report.taskId != null &&
+              (report.status == TaskReportStatus.pending ||
+                  report.status == TaskReportStatus.acknowledged),
+        )
+        .toList()
+      ..sort((a, b) => b.reportedAt.compareTo(a.reportedAt));
+
+    final reportedTaskIds = <String>{};
+    for (final report in reportTasks) {
+      final taskId = report.taskId;
+      if (taskId == null || taskId.isEmpty) continue;
+      final baseTask = taskByBackendId[taskId];
+      if (baseTask == null) continue;
+      reported.add(_taskFromReport(baseTask, report));
+      reportedTaskIds.add(taskId);
+    }
+
+    proposed.removeWhere((task) {
+      final backendId = task.backendId;
+      if (backendId == null || backendId.isEmpty) return false;
+      return reportedTaskIds.contains(backendId);
+    });
+
     reported.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     proposed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    // Donut totals should reflect active proposals only
+    int receiptCount = 0;
+    int transferCount = 0;
+    int pickingCount = 0;
+    for (final task in proposed) {
+      switch (task.type) {
+        case TaskType.receipt:
+          receiptCount++;
+          break;
+        case TaskType.storage:
+          transferCount++;
+          break;
+        case TaskType.picking:
+          pickingCount++;
+          break;
+        case TaskType.delivery:
+          transferCount++;
+          break;
+      }
+    }
 
     if (!mounted) return;
     setState(() {
@@ -169,13 +239,108 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         ..clear()
         ..addAll(proposed);
 
+      _historyActions
+        ..clear()
+        ..addAll(history);
+
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+
       _receiptCount = receiptCount;
-      _storageCount = storageCount;
+      _transferCount = transferCount;
       _pickingCount = pickingCount;
-      _deliveryCount = deliveryCount;
 
       _isLoading = false;
     });
+  }
+
+  Future<List<_HistoryAction>> _loadPersistedHistory() async {
+    final queueItems = await _isar.syncQueueCollections
+        .where()
+        .sortByCreatedAtDesc()
+        .findAll();
+
+    final actions = <_HistoryAction>[];
+
+    for (final item in queueItems) {
+      try {
+        final payload = jsonDecode(item.dataJson) as Map<String, dynamic>;
+        final actionRaw = payload['action']?.toString().toUpperCase();
+        if (actionRaw == null) continue;
+
+        if (actionRaw != 'APPROVED' &&
+            actionRaw != 'REJECTED' &&
+            actionRaw != 'REASSIGNED' &&
+            actionRaw != 'DELETED') {
+          continue;
+        }
+
+        final taskCode = payload['task_code']?.toString();
+        final taskType = _taskTypeFromString(payload['task_type']?.toString()) ??
+            _taskTypeFromOperation(item.operationType);
+
+        actions.add(
+          _HistoryAction(
+            action: _historyActionLabel(actionRaw),
+            taskCode: taskCode ?? 'Unknown',
+            type: taskType,
+            timestamp: item.createdAt,
+          ),
+        );
+      } catch (_) {
+        // Ignore malformed queue entries
+      }
+    }
+
+    return actions;
+  }
+
+  String _historyActionLabel(String actionRaw) {
+    switch (actionRaw) {
+      case 'APPROVED':
+        return 'Approved';
+      case 'REJECTED':
+        return 'Rejected';
+      case 'REASSIGNED':
+        return 'Re-Assigned';
+      case 'DELETED':
+        return 'Deleted';
+      default:
+        return actionRaw;
+    }
+  }
+
+  TaskType _taskTypeFromOperation(SyncOperationType operationType) {
+    switch (operationType) {
+      case SyncOperationType.pushBonCommande:
+        return TaskType.receipt;
+      case SyncOperationType.pushBonReplenishment:
+        return TaskType.storage;
+      case SyncOperationType.pushBonPicking:
+        return TaskType.picking;
+      case SyncOperationType.pushBonLivraison:
+        return TaskType.delivery;
+      default:
+        return TaskType.receipt;
+    }
+  }
+
+  TaskType? _taskTypeFromString(String? value) {
+    switch (value?.toLowerCase()) {
+      case 'receipt':
+        return TaskType.receipt;
+      case 'storage':
+        return TaskType.storage;
+      case 'picking':
+        return TaskType.picking;
+      case 'delivery':
+        return TaskType.delivery;
+      default:
+        return null;
+    }
   }
 
   Future<void> _triggerSync({bool showLoader = true}) async {
@@ -360,6 +525,163 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
   }
 
+  _TaskCardData _taskFromEmployeeTask(EmployeeTaskCollection task) {
+    final issues = <String>[];
+    if (task.notes != null && task.notes!.contains('ISSUE_REPORTED:')) {
+      final noteLines = task.notes!.split('\n');
+      for (final line in noteLines) {
+        if (line.contains('ISSUE_REPORTED:')) {
+          issues.add(line.replaceFirst('ISSUE_REPORTED:', '').trim());
+        }
+      }
+    }
+
+    final aiTransfer = _extractAiTransferDecisionFromNotes(task.notes);
+    final aiFloor = aiTransfer?['floor'];
+    final aiZone = aiTransfer?['zone']?.toString();
+    final aiLocation = aiTransfer?['location_code']?.toString();
+    final aiRoute = _routePreview(aiTransfer?['optimized_path']);
+    if (aiRoute != null) {
+      issues.add('Route: $aiRoute');
+    }
+
+    // Map EmployeeTaskType to TaskType
+    TaskType taskType;
+    switch (task.taskType) {
+      case EmployeeTaskType.receipt:
+        taskType = TaskType.receipt;
+        break;
+      case EmployeeTaskType.storage:
+      case EmployeeTaskType.replenishment:
+        taskType = TaskType.storage;
+        break;
+      case EmployeeTaskType.picking:
+      case EmployeeTaskType.preparation:
+        taskType = TaskType.picking;
+        break;
+      case EmployeeTaskType.delivery:
+        taskType = TaskType.delivery;
+        break;
+    }
+
+    return _TaskCardData(
+      source: _TaskSource.employeeTask,
+      localId: task.id,
+      backendId: task.backendId,
+      createdAt: task.createdAt,
+      type: taskType,
+      code: _taskCode(
+        backendId: task.backendId,
+        localId: task.id,
+        type: taskType,
+      ),
+      floor: _aiFloorLabel(aiFloor),
+      zoneOrSlotLabel: (aiZone != null || aiLocation != null) ? 'Zone / Place' : 'Task',
+      zoneOrSlotValue: (aiZone != null || aiLocation != null)
+          ? [if (aiZone != null && aiZone.isNotEmpty) aiZone, if (aiLocation != null && aiLocation.isNotEmpty) aiLocation].join(' • ')
+          : (task.title ?? 'Untitled'),
+      skuCount: task.itemsCount ?? 0,
+      issues: issues,
+    );
+  }
+
+  Map<String, dynamic>? _extractAiTransferDecisionFromNotes(String? notes) {
+    if (notes == null || notes.isEmpty) return null;
+    final line = notes
+        .split('\n')
+        .map((value) => value.trim())
+        .firstWhere(
+          (value) => value.startsWith('AI_TRANSFER_DECISION:'),
+          orElse: () => '',
+        );
+    if (line.isEmpty) return null;
+
+    final payload = line.replaceFirst('AI_TRANSFER_DECISION:', '').trim();
+    if (payload.isEmpty) return null;
+
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
+  }
+
+  String _aiFloorLabel(dynamic floor) {
+    if (floor == null) return 'Various';
+    final level = int.tryParse(floor.toString());
+    if (level == null) return floor.toString();
+    if (level == 0) return 'Ground (0)';
+    return 'Floor $level';
+  }
+
+  String? _routePreview(dynamic routeValue) {
+    if (routeValue is! List) return null;
+    final route = routeValue.map((node) => node.toString()).where((node) => node.isNotEmpty).toList();
+    if (route.isEmpty) return null;
+    return route.join(' → ');
+  }
+
+  _TaskCardData _taskFromReport(
+    _TaskCardData baseTask,
+    TaskReportCollection report,
+  ) {
+    final reportIssues = report.issues.isNotEmpty ? report.issues : baseTask.issues;
+    return _TaskCardData(
+      source: baseTask.source,
+      localId: baseTask.localId,
+      backendId: baseTask.backendId,
+      createdAt: report.reportedAt,
+      type: baseTask.type,
+      code: baseTask.code,
+      floor: baseTask.floor,
+      zoneOrSlotLabel: baseTask.zoneOrSlotLabel,
+      zoneOrSlotValue: baseTask.zoneOrSlotValue,
+      skuCount: baseTask.skuCount,
+      issues: reportIssues,
+      isEmployeeReport: true,
+      reportLocalId: report.id,
+      reportSuggestedSolution: _suggestedSolution(reportIssues, baseTask.type),
+      reportDescription: report.description,
+      reportedByName: report.reportedByName,
+    );
+  }
+
+  String _suggestedSolution(List<String> issues, TaskType type) {
+    final normalized = issues.map((e) => e.toLowerCase()).join(' | ');
+    if (normalized.contains('missing') || normalized.contains('damaged')) {
+      return 'Validate good quantity, store only valid items, and adjust received count.';
+    }
+    if (normalized.contains('slot') ||
+        normalized.contains('location') ||
+        normalized.contains('occupied') ||
+        normalized.contains('blocked') ||
+        normalized.contains('access')) {
+      return 'Re-assign to a free location and continue execution.';
+    }
+    if (normalized.contains('wrong product') || normalized.contains('mismatch')) {
+      return 'Quarantine mismatch items and continue with verified products only.';
+    }
+
+    switch (type) {
+      case TaskType.receipt:
+        return 'Approve valid received quantity and continue receiving workflow.';
+      case TaskType.storage:
+        return 'Assign alternate slot and re-run storage execution.';
+      case TaskType.picking:
+        return 'Re-route picking with available stock/location.';
+      case TaskType.delivery:
+        return 'Escalate and continue with validated deliverable items only.';
+    }
+  }
+
+  bool _requiresGoodQuantityAdjustment(_TaskCardData task) {
+    if (task.type != TaskType.receipt) return false;
+    return task.issues.any((issue) {
+      final value = issue.toLowerCase();
+      return value.contains('missing') || value.contains('damaged');
+    });
+  }
+
   SyncOperationType _operationForTask(TaskType type) {
     return switch (type) {
       TaskType.receipt => SyncOperationType.pushBonCommande,
@@ -379,6 +701,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       'id': task.backendId ?? task.localId.toString(),
       'local_id': task.localId,
       'action': action,
+      'task_code': task.code,
+      'task_type': task.type.name,
       'updated_at': DateTime.now().toIso8601String(),
       ...?extra,
     };
@@ -397,14 +721,20 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Future<void> _reassignTask(_TaskCardData task) async {
+    String? syncStatus;
+    String? syncNotes;
+
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
           final entity = await _isar.bonCommandeCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonCommandeStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
           final entity = await _isar.bonReplenishmentCollections.get(
@@ -412,31 +742,63 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           );
           if (entity == null) return;
           entity.status = BonReplenishmentStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonReplenishmentCollections.put(entity);
         case _TaskSource.bonPicking:
           final entity = await _isar.bonPickingCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonPickingStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonPickingCollections.put(entity);
         case _TaskSource.bonLivraison:
           final entity = await _isar.bonLivraisonCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonLivraisonStatus.idle;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'IDLE';
+          syncNotes = entity.notes;
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
-    await _enqueueTaskSync(task, action: 'REASSIGNED', priority: 9);
+    await _enqueueTaskSync(
+      task,
+      action: 'REASSIGNED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+      },
+      priority: 9,
+    );
 
     setState(() {
       _reportedTasks.remove(task);
       _proposedTasks.insert(0, task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
     });
 
     _addHistoryAction('Re-Assigned', task.code, task.type);
@@ -449,9 +811,161 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _triggerSync(showLoader: false);
   }
 
+  Future<void> _deleteTask(_TaskCardData task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          'Delete Task',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Delete ${task.code} from Handle Reports?',
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(
+                color: const Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Delete',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    String? syncStatus;
+    String? syncNotes;
+
+    await _isar.writeTxn(() async {
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonCommandeStatus.completed;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'COMPLETED';
+          syncNotes = entity.notes;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.failed;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'FAILED';
+          syncNotes = entity.notes;
+          await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(
+      task,
+      action: 'DELETED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+      },
+      priority: 9,
+    );
+
+    setState(() {
+      _reportedTasks.remove(task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+    });
+
+    _addHistoryAction('Deleted', task.code, task.type);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Task ${task.code} deleted successfully')),
+    );
+
+    await _triggerSync(showLoader: false);
+  }
+
+  String _clearIssueReportedNotes(String? notes) {
+    final lines = (notes ?? '')
+        .split('\n')
+        .where((line) => !line.contains('ISSUE_REPORTED'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+
+    lines.add('REASSIGNED_BY_SUPERVISOR:${DateTime.now().toIso8601String()}');
+    return lines.join('\n');
+  }
+
+  String _markDeletedNotes(String? notes) {
+    final lines = (notes ?? '')
+        .split('\n')
+        .where((line) => !line.contains('ISSUE_REPORTED'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+
+    lines.add('DELETED_BY_SUPERVISOR:${DateTime.now().toIso8601String()}');
+    return lines.join('\n');
+  }
+
   List<_TaskCardData> get _filteredProposedTasks {
     return _proposedTasks
-        .where((task) => task.type == _selectedFilter.toTaskType())
+      .where((task) => _selectedFilter.matches(task.type))
         .toList();
   }
 
@@ -528,7 +1042,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final totalTasks = _receiptCount + _storageCount + _pickingCount + _deliveryCount;
+    final totalTasks = _receiptCount + _transferCount + _pickingCount;
 
     if (_isLoading) {
       return const Scaffold(
@@ -593,8 +1107,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             (_searchController.text.isEmpty ||
                 task.code
                     .toLowerCase()
-                    .contains(_searchController.text.toLowerCase())) &&
-            task.type == _searchFilter.toTaskType())
+                        .contains(_searchController.text.toLowerCase())) &&
+                      _searchFilter.matches(task))
         .toList();
 
     return Column(
@@ -698,17 +1212,17 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   itemCount: filteredTasks.length,
                   itemBuilder: (context, index) {
                     final task = filteredTasks[index];
+                    final isReported = _reportedTasks.contains(task);
+                    final isProposed = _proposedTasks.contains(task);
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 16),
                       child: _SupervisorTaskCard(
                         data: task,
-                        showReviewButton: _proposedTasks.contains(task),
-                        onReassign: _reportedTasks.contains(task)
-                            ? () => _reassignTask(task)
-                            : null,
-                        onReview: _proposedTasks.contains(task)
+                        showReviewButton: isProposed || isReported,
+                        onReassign: null,
+                        onReview: isProposed
                             ? () => _reviewTask(task)
-                            : null,
+                            : (isReported ? () => _reviewReport(task) : null),
                       ),
                     );
                   },
@@ -765,6 +1279,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildHeader(TextTheme textTheme) {
+    final isOnlineNow = _isOnline;
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -800,7 +1316,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
               children: [
                 IconButton(
                   visualDensity: VisualDensity.compact,
-                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+                  onPressed: isOnlineNow && !_isSyncing ? _triggerSync : null,
                   icon: _isSyncing
                       ? const SizedBox(
                           width: 20,
@@ -825,12 +1341,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   height: 8,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: _isOnline ? Colors.green : Colors.red,
+                    color: isOnlineNow ? Colors.green : Colors.red,
                   ),
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  _isOnline ? 'Online' : 'Offline',
+                  isOnlineNow ? 'Online' : 'Offline',
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w600,
@@ -838,15 +1354,6 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Last sync: $_lastSync',
-              style: GoogleFonts.manrope(
-                textStyle: textTheme.bodySmall,
-                fontWeight: FontWeight.w500,
-                color: const Color(0xFF64748B),
-              ),
             ),
           ],
         ),
@@ -865,9 +1372,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             child: CustomPaint(
               painter: _DonutChartPainter(
                 receiptCount: _receiptCount,
-                storageCount: _storageCount,
+                transferCount: _transferCount,
                 pickingCount: _pickingCount,
-                deliveryCount: _deliveryCount,
                 totalTasks: totalTasks,
               ),
             ),
@@ -906,7 +1412,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     border: Border.all(color: const Color(0xFFE2E8F0)),
                   ),
                   child: Text(
-                    '${_proposedTasks.length} Proposals | ${_reportedTasks.length} Overrides',
+                    '${_proposedTasks.length} Proposals | ${_reportedTasks.length} Reviews',
                     style: GoogleFonts.manrope(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -924,6 +1430,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildHandleReports(TextTheme textTheme) {
+    final selectedColor = _selectedFilter.color;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -938,16 +1446,54 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         const SizedBox(height: 16),
         if (_reportedTasks.isEmpty)
           _buildEmptyState(textTheme, 'No reported issues.')
-        else
-          ..._reportedTasks.map(
-            (task) => Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: _SupervisorTaskCard(
-                data: task,
-                onReassign: () => _reassignTask(task),
-              ),
+        else ...[
+          SizedBox(
+            height: 140,
+            child: PageView.builder(
+              controller: _reportedPageController,
+              itemCount: _reportedTasks.length,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentReportedPage = index;
+                });
+              },
+              itemBuilder: (context, index) {
+                final task = _reportedTasks[index];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    child: SizedBox(
+                      width: 302,
+                      height: 123,
+                      child: _SupervisorTaskCard(
+                        data: task,
+                        compact: true,
+                        overrideColor: selectedColor,
+                        onReview: () => _reviewReport(task),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(_reportedTasks.length, (index) {
+              final isActive = index == _currentReportedPage;
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: isActive ? 10 : 8,
+                height: isActive ? 10 : 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isActive ? selectedColor : selectedColor.withOpacity(0.25),
+                ),
+              );
+            }),
+          ),
+        ],
       ],
     );
   }
@@ -958,16 +1504,31 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Review Proposed Tasks',
-          style: GoogleFonts.manrope(
-            textStyle: textTheme.titleLarge,
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFF0F172A),
+        Center(
+          child: Text(
+            'Review AI Proposed Tasks',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.manrope(
+              textStyle: textTheme.titleLarge,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF0F172A),
+            ),
           ),
         ),
         const SizedBox(height: 16),
         _buildFilterButtons(),
+        const SizedBox(height: 10),
+        Center(
+          child: Text(
+            _selectedFilter.description,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.manrope(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: const Color(0xFF64748B),
+            ),
+          ),
+        ),
         const SizedBox(height: 16),
         if (filteredTasks.isEmpty)
           _buildEmptyState(textTheme, 'No proposed tasks.')
@@ -987,40 +1548,46 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildFilterButtons() {
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: TaskTypeFilter.values.map((filter) {
-        final isSelected = _selectedFilter == filter;
-        final color = filter.color;
+    final chips = ProposedTaskFilter.values.map((filter) {
+      final isSelected = _selectedFilter == filter;
+      final color = filter.color;
 
-        return InkWell(
-          onTap: () => setState(() => _selectedFilter = filter),
-          borderRadius: BorderRadius.circular(20),
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 18,
-              vertical: 10,
-            ),
-            decoration: BoxDecoration(
-              color: isSelected ? color : Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: isSelected ? color : const Color(0xFFE2E8F0),
-                width: 2,
-              ),
-            ),
-            child: Text(
-              filter.label,
-              style: GoogleFonts.manrope(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: isSelected ? Colors.white : const Color(0xFF64748B),
-              ),
+      return InkWell(
+        onTap: () => setState(() => _selectedFilter = filter),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 18,
+            vertical: 10,
+          ),
+          decoration: BoxDecoration(
+            color: isSelected ? color : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isSelected ? color : const Color(0xFFE2E8F0),
+              width: 2,
             ),
           ),
-        );
-      }).toList(),
+          child: Text(
+            filter.label,
+            style: GoogleFonts.manrope(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isSelected ? Colors.white : const Color(0xFF64748B),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (var i = 0; i < chips.length; i++) ...[
+          chips[i],
+          if (i != chips.length - 1) const SizedBox(width: 10),
+        ],
+      ],
     );
   }
 
@@ -1050,55 +1617,103 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Future<void> _reviewTask(_TaskCardData task) async {
-    final result = await _showReviewDialog(task);
+    final result = await _showAIDecisionDialog(task);
     if (result == null) return;
+
+    final isApproved = result.action == _AIDecisionAction.approve;
+    final actionLabel = isApproved ? 'Approved' : 'Overridden';
+    final overrideNote = isApproved
+        ? 'AI_DECISION_APPROVED_BY_SUPERVISOR'
+        : (task.type == TaskType.receipt
+            ? 'FORECAST_OVERRIDE:${jsonEncode(result.forecastSkuCounts)}'
+            : 'LOCATION_OVERRIDE:${result.overrideLocationCode ?? ''}');
+
+    String? syncStatus;
+    String? syncNotes;
+    String? syncAssigneeField;
+    String? syncAssigneeId;
 
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
           final entity = await _isar.bonCommandeCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonCommandeStatus.pending
-              : BonCommandeStatus.completed;
+          entity.employeeId = result.employeeId;
+          syncAssigneeField = 'employee_id';
+          syncAssigneeId = result.employeeId;
+          entity.status = BonCommandeStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
           final entity = await _isar.bonReplenishmentCollections.get(
             task.localId,
           );
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonReplenishmentStatus.pending
-              : BonReplenishmentStatus.cancelled;
+          entity.employeeId = result.employeeId;
+          syncAssigneeField = 'employee_id';
+          syncAssigneeId = result.employeeId;
+          entity.status = BonReplenishmentStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonReplenishmentCollections.put(entity);
         case _TaskSource.bonPicking:
           final entity = await _isar.bonPickingCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonPickingStatus.pending
-              : BonPickingStatus.cancelled;
+          entity.employeeId = result.employeeId;
+          syncAssigneeField = 'employee_id';
+          syncAssigneeId = result.employeeId;
+          entity.status = BonPickingStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonPickingCollections.put(entity);
         case _TaskSource.bonLivraison:
           final entity = await _isar.bonLivraisonCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonLivraisonStatus.idle
-              : BonLivraisonStatus.failed;
+          entity.employeeId = result.employeeId;
+          syncAssigneeField = 'employee_id';
+          syncAssigneeId = result.employeeId;
+          entity.status = BonLivraisonStatus.idle;
+          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'IDLE';
+          syncNotes = entity.notes;
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.assignedToUserId = result.employeeId;
+          syncAssigneeField = 'assigned_to_id';
+          syncAssigneeId = result.employeeId;
+          entity.status = EmployeeTaskStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
     await _enqueueTaskSync(
       task,
-      action: result == 'approve' ? 'APPROVED' : 'REJECTED',
+      action: isApproved ? 'APPROVED' : 'REASSIGNED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+        if (syncAssigneeField != null && syncAssigneeId != null)
+          syncAssigneeField!: syncAssigneeId,
+      },
       priority: 9,
     );
 
@@ -1107,7 +1722,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     });
 
     _addHistoryAction(
-      result == 'approve' ? 'Approved' : 'Rejected',
+      actionLabel,
       task.code,
       task.type,
     );
@@ -1116,7 +1731,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Task ${task.code} ${result == 'approve' ? 'approved' : 'rejected'}',
+          'Task ${task.code} $actionLabel and assigned to ${result.employeeName}',
         ),
       ),
     );
@@ -1124,18 +1739,174 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _triggerSync(showLoader: false);
   }
 
-  Future<String?> _showReviewDialog(_TaskCardData task) async {
-    return showDialog<String>(
+  Future<void> _approveReport(_TaskCardData task) async {
+    if (!task.isEmployeeReport || task.reportLocalId == null) return;
+
+    final user = await _isar.userCollections.where().findFirst();
+    final report = await _isar.taskReportCollections.get(task.reportLocalId!);
+    if (report == null) return;
+
+    int? approvedGoodQuantity;
+    if (_requiresGoodQuantityAdjustment(task)) {
+      approvedGoodQuantity = await _showGoodQuantityDialog(task);
+      if (approvedGoodQuantity == null) return;
+    }
+
+    String? syncStatus;
+    String? syncNotes;
+
+    await _isar.writeTxn(() async {
+      report.status = TaskReportStatus.resolved;
+      report.supervisorId = user?.backendId ?? user?.id.toString();
+      report.supervisorName = user?.fullName;
+      report.resolvedAt = DateTime.now();
+      report.supervisorNotes = task.reportSuggestedSolution;
+      report.updatedAt = DateTime.now();
+      await _isar.taskReportCollections.put(report);
+
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          if (approvedGoodQuantity != null) {
+            entity.totalQuantityExpected = approvedGoodQuantity;
+            entity.totalQuantityReceived = approvedGoodQuantity;
+          }
+          entity.status = BonCommandeStatus.inProgress;
+          entity.notes = _appendSupervisorNote(
+            entity.notes,
+            'REPORT_APPROVED:${report.backendId ?? report.id}',
+          );
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'IN_PROGRESS';
+          syncNotes = entity.notes;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.pending;
+          entity.notes = _appendSupervisorNote(
+            entity.notes,
+            'REPORT_APPROVED:${report.backendId ?? report.id}',
+          );
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.pending;
+          entity.notes = _appendSupervisorNote(
+            entity.notes,
+            'REPORT_APPROVED:${report.backendId ?? report.id}',
+          );
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.idle;
+          entity.notes = _appendSupervisorNote(
+            entity.notes,
+            'REPORT_APPROVED:${report.backendId ?? report.id}',
+          );
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'IDLE';
+          syncNotes = entity.notes;
+          await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.pending;
+          entity.notes = _appendSupervisorNote(
+            entity.notes,
+            'REPORT_APPROVED:${report.backendId ?? report.id}',
+          );
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(
+      task,
+      action: 'APPROVED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+        if (approvedGoodQuantity != null && task.source == _TaskSource.bonCommande)
+          'total_quantity_received': approvedGoodQuantity,
+        if (approvedGoodQuantity != null && task.source == _TaskSource.bonCommande)
+          'total_quantity_expected': approvedGoodQuantity,
+      },
+      priority: 9,
+    );
+
+    setState(() {
+      _reportedTasks.remove(task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+    });
+
+    _addHistoryAction('Approved', task.code, task.type);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Report for ${task.code} approved')),
+    );
+
+    await _triggerSync(showLoader: false);
+  }
+
+  Future<void> _reviewReport(_TaskCardData task) async {
+    if (!task.isEmployeeReport || task.reportLocalId == null) return;
+
+    final decision = await showDialog<_ReportReviewDecision>(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text(
-          'Review Task',
+          'Review Report',
           style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
         ),
-        content: Text(
-          'Do you want to approve or reject task ${task.code}?',
-          style: GoogleFonts.manrope(),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Task ${task.code}',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+            if (task.issues.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Issue: ${task.issues.first}',
+                style: GoogleFonts.manrope(),
+              ),
+            ],
+            if ((task.reportSuggestedSolution ?? '').trim().isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Suggested solution: ${task.reportSuggestedSolution}',
+                style: GoogleFonts.manrope(
+                  color: const Color(0xFF475569),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ],
         ),
         actions: [
           TextButton(
@@ -1149,7 +1920,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             ),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context, 'reject'),
+            onPressed: () => Navigator.pop(context, _ReportReviewDecision.reject),
             child: Text(
               'Reject',
               style: GoogleFonts.manrope(
@@ -1159,7 +1930,167 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             ),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, 'approve'),
+            onPressed: () => Navigator.pop(context, _ReportReviewDecision.accept),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3C91CC),
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Accept',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (decision == null) return;
+    if (decision == _ReportReviewDecision.accept) {
+      await _approveReport(task);
+      return;
+    }
+
+    await _rejectReport(task);
+  }
+
+  Future<void> _rejectReport(_TaskCardData task) async {
+    if (!task.isEmployeeReport || task.reportLocalId == null) return;
+
+    final user = await _isar.userCollections.where().findFirst();
+    final report = await _isar.taskReportCollections.get(task.reportLocalId!);
+    if (report == null) return;
+
+    String? syncNotes;
+
+    await _isar.writeTxn(() async {
+      report.status = TaskReportStatus.resolved;
+      report.supervisorId = user?.backendId ?? user?.id.toString();
+      report.supervisorName = user?.fullName;
+      report.resolvedAt = DateTime.now();
+      report.supervisorNotes = 'REPORT_REJECTED_BY_SUPERVISOR';
+      report.updatedAt = DateTime.now();
+      await _isar.taskReportCollections.put(report);
+
+      final marker = 'REPORT_REJECTED:${report.backendId ?? report.id}';
+
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncNotes = entity.notes;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          if (entity == null) return;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncNotes = entity.notes;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncNotes = entity.notes;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncNotes = entity.notes;
+          await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(
+      task,
+      action: 'REJECTED',
+      extra: {
+        'notes': syncNotes,
+      },
+      priority: 9,
+    );
+
+    setState(() {
+      _reportedTasks.remove(task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+    });
+
+    _addHistoryAction('Rejected', task.code, task.type);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Report for ${task.code} rejected')),
+    );
+
+    await _triggerSync(showLoader: false);
+  }
+
+  Future<int?> _showGoodQuantityDialog(_TaskCardData task) async {
+    final controller = TextEditingController(text: task.skuCount.toString());
+
+    return showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          'Validate Good Quantity',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: 'Good quantity to store',
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(
+                color: const Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final parsed = int.tryParse(controller.text.trim());
+              if (parsed == null || parsed < 0 || parsed > task.skuCount) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Enter a value between 0 and ${task.skuCount}'),
+                  ),
+                );
+                return;
+              }
+              Navigator.pop(context, parsed);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF3C91CC),
               foregroundColor: Colors.white,
@@ -1168,7 +2099,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
               ),
             ),
             child: Text(
-              'Approve',
+              'Save',
               style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
             ),
           ),
@@ -1176,25 +2107,670 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       ),
     );
   }
+
+  Future<_AIDecisionReviewResult?> _showAIDecisionDialog(_TaskCardData task) async {
+    final assignmentOptions = await _loadEmployeeAssignmentOptions(task);
+
+    if (assignmentOptions.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No employees available for assignment.')),
+        );
+      }
+      return null;
+    }
+
+    final skus = await _isar.sKUCollections.where().findAll();
+
+    final selectedForecast = <String, int>{};
+    final locationController = TextEditingController();
+    _AIDecisionAction selectedAction = _AIDecisionAction.approve;
+
+    String selectedEmployeeId = assignmentOptions.first.id;
+
+    return showDialog<_AIDecisionReviewResult>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final isForecastTask = task.type == TaskType.receipt;
+          if (selectedEmployeeId.isEmpty) {
+            selectedEmployeeId = assignmentOptions.first.id;
+          }
+          final overrideCategory = _overrideCategoryForTask(task.type);
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Text(
+              'Review AI Decision',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Task ${task.code}', style: GoogleFonts.manrope(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: selectedEmployeeId,
+                      decoration: InputDecoration(
+                        labelText: 'Assign Employee',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      items: assignmentOptions
+                          .map(
+                            (candidate) => DropdownMenuItem<String>(
+                              value: candidate.id,
+                              child: Text(candidate.name, style: GoogleFonts.manrope()),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setDialogState(() {
+                          selectedEmployeeId = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    ChoiceChip(
+                      label: const Text('Override'),
+                      selected: selectedAction == _AIDecisionAction.override,
+                      onSelected: (selected) {
+                        setDialogState(() {
+                          selectedAction = selected
+                              ? _AIDecisionAction.override
+                              : _AIDecisionAction.approve;
+                        });
+                      },
+                    ),
+                    if (selectedAction == _AIDecisionAction.override) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        '${overrideCategory.label} Override',
+                        style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      if (isForecastTask) ...[
+                        Text(
+                          'Select products and set quantities',
+                          style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 220),
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: skus.take(12).map((sku) {
+                              final key = sku.backendId ?? sku.skuCode;
+                              final isSelected = selectedForecast.containsKey(key);
+                              final qty = selectedForecast[key] ?? 1;
+                              return Row(
+                                children: [
+                                  Checkbox(
+                                    value: isSelected,
+                                    onChanged: (checked) {
+                                      setDialogState(() {
+                                        if (checked == true) {
+                                          selectedForecast[key] = 1;
+                                        } else {
+                                          selectedForecast.remove(key);
+                                        }
+                                      });
+                                    },
+                                  ),
+                                  Expanded(
+                                    child: Text(
+                                      '${sku.skuCode} - ${sku.name}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.manrope(fontSize: 12),
+                                    ),
+                                  ),
+                                  if (isSelected)
+                                    Row(
+                                      children: [
+                                        IconButton(
+                                          onPressed: () {
+                                            setDialogState(() {
+                                              selectedForecast[key] = math.max(1, qty - 1);
+                                            });
+                                          },
+                                          icon: const Icon(Icons.remove_circle_outline, size: 18),
+                                        ),
+                                        Text('$qty', style: GoogleFonts.manrope(fontWeight: FontWeight.w700)),
+                                        IconButton(
+                                          onPressed: () {
+                                            setDialogState(() {
+                                              selectedForecast[key] = qty + 1;
+                                            });
+                                          },
+                                          icon: const Icon(Icons.add_circle_outline, size: 18),
+                                        ),
+                                      ],
+                                    ),
+                                ],
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ] else ...[
+                        TextField(
+                          controller: locationController,
+                          textCapitalization: TextCapitalization.characters,
+                          decoration: InputDecoration(
+                            labelText: overrideCategory == _OverrideCategory.transfer
+                                ? 'Upper-Floor Location Code'
+                                : 'Ground-Floor Location Code',
+                            hintText: overrideCategory == _OverrideCategory.transfer
+                                ? 'B7-N1-C12'
+                                : 'B7-0A-12-34',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(
+                  'Cancel',
+                  style: GoogleFonts.manrope(
+                    color: const Color(0xFF64748B),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final selectedEmployee = assignmentOptions.firstWhere(
+                    (candidate) => candidate.id == selectedEmployeeId,
+                    orElse: () => assignmentOptions.first,
+                  );
+
+                  String? overrideLocationCode;
+                  Map<String, int> forecastPayload = const {};
+
+                  if (selectedAction == _AIDecisionAction.override) {
+                    if (task.type == TaskType.receipt) {
+                      if (selectedForecast.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Select at least one product and count.')),
+                        );
+                        return;
+                      }
+                      forecastPayload = Map<String, int>.from(selectedForecast);
+                    } else {
+                      final enteredCode = locationController.text.trim().toUpperCase();
+                      if (enteredCode.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Enter a location code.')),
+                        );
+                        return;
+                      }
+
+                      final normalizedCode = _normalizeLocationCode(enteredCode);
+                      final formatError = _locationCodePatternError(
+                        normalizedCode,
+                        overrideCategory,
+                      );
+                      if (formatError != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(formatError)),
+                        );
+                        return;
+                      }
+
+                      final location = await _findLocationByNormalizedCode(normalizedCode);
+
+                      if (location == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Location $enteredCode not found. Sync locations and try again.')),
+                        );
+                        return;
+                      }
+
+                      final available = location.status == LocationStatus.free;
+                      if (!available) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Location ${location.code} is occupied/assigned. Choose a free one.')),
+                        );
+                        return;
+                      }
+
+                      overrideLocationCode = location.code;
+                    }
+                  }
+
+                  if (!mounted) return;
+                  Navigator.pop(
+                    context,
+                    _AIDecisionReviewResult(
+                      action: selectedAction,
+                      employeeId: selectedEmployee.id,
+                      employeeName: selectedEmployee.name,
+                      overrideLocationCode: overrideLocationCode,
+                      forecastSkuCounts: forecastPayload,
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF3C91CC),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: Text(
+                  selectedAction == _AIDecisionAction.approve
+                      ? 'Approve + Assign'
+                      : 'Override + Assign',
+                  style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<List<_EmployeeAssignmentOption>> _loadEmployeeAssignmentOptions(
+    _TaskCardData task,
+  ) async {
+    final optionsById = <String, _EmployeeAssignmentOption>{};
+    final nameById = <String, String>{};
+
+    void addOption(String? id, {String? name}) {
+      final normalizedId = (id ?? '').trim();
+      if (normalizedId.isEmpty) return;
+      final resolvedName =
+          (name ?? '').trim().isNotEmpty ? name!.trim() : (nameById[normalizedId] ?? 'Employee');
+      optionsById.putIfAbsent(
+        normalizedId,
+        () => _EmployeeAssignmentOption(
+          id: normalizedId,
+          name: resolvedName,
+        ),
+      );
+    }
+
+    final employees = await _isar.userCollections
+        .filter()
+        .roleEqualTo(UserRole.employee)
+        .findAll();
+
+    for (final employee in employees) {
+      final localId = employee.id.toString();
+      final backendId = (employee.backendId ?? '').trim();
+      if (employee.fullName.trim().isNotEmpty) {
+        nameById[localId] = employee.fullName.trim();
+        if (backendId.isNotEmpty) {
+          nameById[backendId] = employee.fullName.trim();
+        }
+      }
+      addOption(employee.backendId, name: employee.fullName);
+    }
+
+    if (optionsById.isNotEmpty) {
+      return optionsById.values.toList();
+    }
+
+    switch (task.source) {
+      case _TaskSource.bonCommande:
+        final entity = await _isar.bonCommandeCollections.get(task.localId);
+        addOption(entity?.employeeId);
+      case _TaskSource.bonReplenishment:
+        final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+        addOption(entity?.employeeId);
+      case _TaskSource.bonPicking:
+        final entity = await _isar.bonPickingCollections.get(task.localId);
+        addOption(entity?.employeeId);
+      case _TaskSource.bonLivraison:
+        final entity = await _isar.bonLivraisonCollections.get(task.localId);
+        addOption(entity?.employeeId);
+      case _TaskSource.employeeTask:
+        final entity = await _isar.employeeTaskCollections.get(task.localId);
+        addOption(entity?.assignedToUserId);
+    }
+
+    if (optionsById.isNotEmpty) {
+      return optionsById.values.toList();
+    }
+
+    final employeeTasks = await _isar.employeeTaskCollections.where().findAll();
+    for (final employeeTask in employeeTasks) {
+      addOption(employeeTask.assignedToUserId);
+    }
+
+    final commandes = await _isar.bonCommandeCollections.where().findAll();
+    for (final commande in commandes) {
+      addOption(commande.employeeId);
+    }
+
+    final replenishments = await _isar.bonReplenishmentCollections.where().findAll();
+    for (final replenishment in replenishments) {
+      addOption(replenishment.employeeId);
+    }
+
+    final pickings = await _isar.bonPickingCollections.where().findAll();
+    for (final picking in pickings) {
+      addOption(picking.employeeId);
+    }
+
+    final livraisons = await _isar.bonLivraisonCollections.where().findAll();
+    for (final livraison in livraisons) {
+      addOption(livraison.employeeId);
+    }
+
+    return optionsById.values.toList();
+  }
+
+  _OverrideCategory _overrideCategoryForTask(TaskType taskType) {
+    switch (taskType) {
+      case TaskType.receipt:
+        return _OverrideCategory.forecasting;
+      case TaskType.storage:
+        return _OverrideCategory.transfer;
+      case TaskType.picking:
+        return _OverrideCategory.picking;
+      case TaskType.delivery:
+        return _OverrideCategory.transfer;
+    }
+  }
+
+  String _normalizeLocationCode(String value) {
+    return value.toUpperCase().replaceAll('-', '').replaceAll(' ', '');
+  }
+
+  String? _locationCodePatternError(
+    String normalizedCode,
+    _OverrideCategory category,
+  ) {
+    if (category == _OverrideCategory.forecasting) {
+      return null;
+    }
+
+    if (category == _OverrideCategory.transfer) {
+      final transferRegex = RegExp(r'^B7N[1-4]C[0-9]+$');
+      if (!transferRegex.hasMatch(normalizedCode)) {
+        return 'Transfer code format must be B7-NZ-CW (Z=1..4, W=integer), e.g. B7-N2-C15.';
+      }
+      return null;
+    }
+
+    if (category == _OverrideCategory.picking) {
+      final pickRegex = RegExp(r'^B70A[0-9]{4}$');
+      if (!pickRegex.hasMatch(normalizedCode)) {
+        return 'Pick code format must be B7-0A-XX-YY (X,Y=0..9), e.g. B7-0A-12-34.';
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  Future<LocationCollection?> _findLocationByNormalizedCode(
+    String normalizedCode,
+  ) async {
+    final direct = await _isar.locationCollections
+        .filter()
+        .codeEqualTo(normalizedCode)
+        .findFirst();
+    if (direct != null) return direct;
+
+    final allLocations = await _isar.locationCollections.where().findAll();
+    for (final location in allLocations) {
+      if (_normalizeLocationCode(location.code) == normalizedCode) {
+        return location;
+      }
+    }
+
+    return null;
+  }
+
+  String _appendSupervisorNote(String? notes, String marker) {
+    final current = (notes ?? '').trim();
+    if (current.isEmpty) return marker;
+    return '$current\n$marker';
+  }
+}
+
+enum _AIDecisionAction { approve, override }
+
+enum _OverrideCategory { forecasting, transfer, picking }
+
+extension _OverrideCategoryLabel on _OverrideCategory {
+  String get label {
+    switch (this) {
+      case _OverrideCategory.forecasting:
+        return 'Forecast';
+      case _OverrideCategory.transfer:
+        return 'Transfer';
+      case _OverrideCategory.picking:
+        return 'Pick';
+    }
+  }
+}
+
+enum _ReportReviewDecision { accept, reject }
+
+class _AIDecisionReviewResult {
+  const _AIDecisionReviewResult({
+    required this.action,
+    required this.employeeId,
+    required this.employeeName,
+    required this.forecastSkuCounts,
+    this.overrideLocationCode,
+  });
+
+  final _AIDecisionAction action;
+  final String employeeId;
+  final String employeeName;
+  final String? overrideLocationCode;
+  final Map<String, int> forecastSkuCounts;
+}
+
+class _EmployeeAssignmentOption {
+  const _EmployeeAssignmentOption({required this.id, required this.name});
+
+  final String id;
+  final String name;
 }
 
 class _SupervisorTaskCard extends StatelessWidget {
   const _SupervisorTaskCard({
     required this.data,
     this.showReviewButton = false,
+    this.compact = false,
+    this.overrideColor,
+    this.onDelete,
     this.onReassign,
     this.onReview,
   });
 
   final _TaskCardData data;
   final bool showReviewButton;
+  final bool compact;
+  final Color? overrideColor;
+  final VoidCallback? onDelete;
   final VoidCallback? onReassign;
   final VoidCallback? onReview;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final typeColor = data.type.color;
+    final typeColor = overrideColor ?? data.type.color;
+
+    if (compact) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 10,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: typeColor,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(18),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    data.type.icon,
+                    size: 16,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${data.type.label} - ${data.code}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.manrope(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      data.issues.isNotEmpty
+                          ? 'Issue: ${data.issues.first}'
+                          : '${data.zoneOrSlotLabel}: ${data.zoneOrSlotValue}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.manrope(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
+                    if (data.reportSuggestedSolution != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        'Solution: ${data.reportSuggestedSolution}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.manrope(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                    const Spacer(),
+                    if (data.isEmployeeReport)
+                      SizedBox(
+                        width: double.infinity,
+                        height: 34,
+                        child: ElevatedButton(
+                          onPressed: onReview,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: typeColor,
+                            foregroundColor: Colors.white,
+                            padding: EdgeInsets.zero,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            elevation: 0,
+                          ),
+                          child: Text(
+                            'Review',
+                            style: GoogleFonts.manrope(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      Row(
+                        children: [
+                          if (onDelete != null) ...[
+                            SizedBox(
+                              width: 34,
+                              height: 34,
+                              child: OutlinedButton(
+                                onPressed: onDelete,
+                                style: OutlinedButton.styleFrom(
+                                  padding: EdgeInsets.zero,
+                                  side: const BorderSide(color: Colors.red, width: 1.6),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.delete_outline,
+                                  size: 18,
+                                  color: Colors.red,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Expanded(
+                            child: SizedBox(
+                              height: 34,
+                              child: ElevatedButton(
+                                onPressed: showReviewButton ? onReview : onReassign,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: typeColor,
+                                  foregroundColor: Colors.white,
+                                  padding: EdgeInsets.zero,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  elevation: 0,
+                                ),
+                                child: Text(
+                                  showReviewButton ? 'Review' : 'Re-Assign',
+                                  style: GoogleFonts.manrope(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -1209,6 +2785,7 @@ class _SupervisorTaskCard extends StatelessWidget {
         ],
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -1257,7 +2834,7 @@ class _SupervisorTaskCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!showReviewButton)
+                if (!showReviewButton && !data.isEmployeeReport)
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
@@ -1395,16 +2972,14 @@ class _InfoRow extends StatelessWidget {
 class _DonutChartPainter extends CustomPainter {
   _DonutChartPainter({
     required this.receiptCount,
-    required this.storageCount,
+    required this.transferCount,
     required this.pickingCount,
-    required this.deliveryCount,
     required this.totalTasks,
   });
 
   final int receiptCount;
-  final int storageCount;
+  final int transferCount;
   final int pickingCount;
-  final int deliveryCount;
   final int totalTasks;
 
   @override
@@ -1417,9 +2992,8 @@ class _DonutChartPainter extends CustomPainter {
 
     const totalSweep = math.pi;
     final receiptAngle = (receiptCount / totalTasks) * totalSweep;
-    final storageAngle = (storageCount / totalTasks) * totalSweep;
+    final transferAngle = (transferCount / totalTasks) * totalSweep;
     final pickingAngle = (pickingCount / totalTasks) * totalSweep;
-    final deliveryAngle = (deliveryCount / totalTasks) * totalSweep;
 
     var startAngle = math.pi;
 
@@ -1441,8 +3015,8 @@ class _DonutChartPainter extends CustomPainter {
       startAngle += receiptAngle;
     }
 
-    // Storage section
-    if (storageCount > 0) {
+    // Transfer section
+    if (transferCount > 0) {
       final paint = Paint()
         ..color = const Color(0xFF7B67BF)
         ..style = PaintingStyle.stroke
@@ -1452,17 +3026,17 @@ class _DonutChartPainter extends CustomPainter {
       canvas.drawArc(
         Rect.fromCircle(center: center, radius: radius - strokeWidth / 2),
         startAngle,
-        storageAngle,
+        transferAngle,
         false,
         paint,
       );
-      startAngle += storageAngle;
+      startAngle += transferAngle;
     }
 
     // Picking section
     if (pickingCount > 0) {
       final paint = Paint()
-        ..color = const Color(0xFFFE8C21)
+        ..color = const Color(0xFF006D84)
         ..style = PaintingStyle.stroke
         ..strokeWidth = strokeWidth
         ..strokeCap = StrokeCap.round;
@@ -1477,22 +3051,6 @@ class _DonutChartPainter extends CustomPainter {
       startAngle += pickingAngle;
     }
 
-    // Delivery section
-    if (deliveryCount > 0) {
-      final paint = Paint()
-        ..color = const Color(0xFF71B643)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = strokeWidth
-        ..strokeCap = StrokeCap.round;
-
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: radius - strokeWidth / 2),
-        startAngle,
-        deliveryAngle,
-        false,
-        paint,
-      );
-    }
   }
 
   @override
@@ -1522,7 +3080,12 @@ class _HistoryCard extends StatelessWidget {
     final now = DateTime.now();
     final diff = now.difference(dt);
 
-    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 1) {
+      // Show hour:minute instead of "just now"
+      final hour = dt.hour.toString().padLeft(2, '0');
+      final minute = dt.minute.toString().padLeft(2, '0');
+      return '$hour:$minute';
+    }
     if (diff.inHours < 1) return '${diff.inMinutes}m ago';
     if (diff.inDays < 1) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
@@ -1531,6 +3094,7 @@ class _HistoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = action.type.color;
+    final actionColor = _actionColor(action.action);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1566,11 +3130,20 @@ class _HistoryCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${action.action} - ${action.taskCode}',
+                  action.taskCode,
                   style: GoogleFonts.manrope(
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
                     color: const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  action.action,
+                  style: GoogleFonts.manrope(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: actionColor,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1597,6 +3170,14 @@ class _HistoryCard extends StatelessWidget {
       ),
     );
   }
+
+  Color _actionColor(String actionLabel) {
+    final normalized = actionLabel.toLowerCase();
+    if (normalized == 'approved') return Colors.green;
+    if (normalized == 'rejected') return Colors.red;
+    if (normalized == 'deleted') return Colors.red;
+    return const Color(0xFF64748B);
+  }
 }
 
 class _TaskCardData {
@@ -1611,6 +3192,11 @@ class _TaskCardData {
     required this.zoneOrSlotValue,
     required this.skuCount,
     required this.issues,
+    this.isEmployeeReport = false,
+    this.reportLocalId,
+    this.reportSuggestedSolution,
+    this.reportDescription,
+    this.reportedByName,
     this.backendId,
   });
 
@@ -1626,9 +3212,14 @@ class _TaskCardData {
   final String zoneOrSlotValue;
   final int skuCount;
   final List<String> issues;
+  final bool isEmployeeReport;
+  final int? reportLocalId;
+  final String? reportSuggestedSolution;
+  final String? reportDescription;
+  final String? reportedByName;
 }
 
-enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison }
+enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison, employeeTask }
 
 enum TaskType { receipt, storage, picking, delivery }
 
@@ -1636,13 +3227,13 @@ extension TaskTypeUI on TaskType {
   String get label {
     switch (this) {
       case TaskType.receipt:
-        return 'Receipt';
+        return 'Forecast';
       case TaskType.storage:
-        return 'Storage';
+        return 'Transfer';
       case TaskType.picking:
-        return 'Picking';
+        return 'Pick';
       case TaskType.delivery:
-        return 'Delivery';
+        return 'Transfer';
     }
   }
 
@@ -1653,7 +3244,7 @@ extension TaskTypeUI on TaskType {
       case TaskType.storage:
         return const Color(0xFF7B67BF);
       case TaskType.picking:
-        return const Color(0xFFFE8C21);
+        return const Color(0xFF006D84);
       case TaskType.delivery:
         return const Color(0xFF71B643);
     }
@@ -1673,45 +3264,93 @@ extension TaskTypeUI on TaskType {
   }
 }
 
-enum TaskTypeFilter { receipt, storage, picking, delivery }
+enum TaskTypeFilter { reports, forecast, transfer, pick }
 
-extension TaskTypeFilterUI on TaskTypeFilter {
+enum ProposedTaskFilter { forecast, transfer, pick }
+
+extension ProposedTaskFilterUI on ProposedTaskFilter {
   String get label {
     switch (this) {
-      case TaskTypeFilter.receipt:
-        return 'Receipt';
-      case TaskTypeFilter.storage:
-        return 'Storage';
-      case TaskTypeFilter.picking:
-        return 'Picking';
-      case TaskTypeFilter.delivery:
-        return 'Delivery';
+      case ProposedTaskFilter.forecast:
+        return 'Forecast';
+      case ProposedTaskFilter.transfer:
+        return 'Transfer';
+      case ProposedTaskFilter.pick:
+        return 'Pick';
+    }
+  }
+
+  String get description {
+    switch (this) {
+      case ProposedTaskFilter.forecast:
+        return 'Forecast: predict products and their quantities that will be sold tomorrow.';
+      case ProposedTaskFilter.transfer:
+        return 'Transfer: provide storage slot codes in upper floors only.';
+      case ProposedTaskFilter.pick:
+        return 'Pick: provide rack slot codes in ground floor only.';
     }
   }
 
   Color get color {
     switch (this) {
-      case TaskTypeFilter.receipt:
+      case ProposedTaskFilter.forecast:
         return const Color(0xFF3C91CC);
-      case TaskTypeFilter.storage:
+      case ProposedTaskFilter.transfer:
         return const Color(0xFF7B67BF);
-      case TaskTypeFilter.picking:
-        return const Color(0xFFFE8C21);
-      case TaskTypeFilter.delivery:
-        return const Color(0xFF71B643);
+      case ProposedTaskFilter.pick:
+        return const Color(0xFF006D84);
     }
   }
 
-  TaskType toTaskType() {
+  bool matches(TaskType taskType) {
     switch (this) {
-      case TaskTypeFilter.receipt:
-        return TaskType.receipt;
-      case TaskTypeFilter.storage:
-        return TaskType.storage;
-      case TaskTypeFilter.picking:
-        return TaskType.picking;
-      case TaskTypeFilter.delivery:
-        return TaskType.delivery;
+      case ProposedTaskFilter.forecast:
+        return taskType == TaskType.receipt;
+      case ProposedTaskFilter.transfer:
+        return taskType == TaskType.storage || taskType == TaskType.delivery;
+      case ProposedTaskFilter.pick:
+        return taskType == TaskType.picking;
+    }
+  }
+}
+
+extension TaskTypeFilterUI on TaskTypeFilter {
+  String get label {
+    switch (this) {
+      case TaskTypeFilter.reports:
+        return 'Reports';
+      case TaskTypeFilter.forecast:
+        return 'Forecast';
+      case TaskTypeFilter.transfer:
+        return 'Transfer';
+      case TaskTypeFilter.pick:
+        return 'Pick';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case TaskTypeFilter.reports:
+        return const Color(0xFF16A34A);
+      case TaskTypeFilter.forecast:
+        return const Color(0xFF3C91CC);
+      case TaskTypeFilter.transfer:
+        return const Color(0xFF7B67BF);
+      case TaskTypeFilter.pick:
+        return const Color(0xFF006D84);
+    }
+  }
+
+  bool matches(_TaskCardData task) {
+    switch (this) {
+      case TaskTypeFilter.reports:
+        return task.isEmployeeReport;
+      case TaskTypeFilter.forecast:
+        return task.type == TaskType.receipt;
+      case TaskTypeFilter.transfer:
+        return task.type == TaskType.storage || task.type == TaskType.delivery;
+      case TaskTypeFilter.pick:
+        return task.type == TaskType.picking;
     }
   }
 }

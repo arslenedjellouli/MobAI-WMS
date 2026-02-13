@@ -7,9 +7,12 @@ import 'package:isar/isar.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/config/routes/app_routes.dart';
 import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
+import 'package:mobile_ai/core/network/network_service.dart';
+import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
@@ -699,22 +702,14 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     if (confirmed != true) return;
 
-    // Clear tokens from database
-    final user = await _isar.userCollections.where().findFirst();
-    if (user != null) {
-      await _isar.writeTxn(() async {
-        user.accessToken = null;
-        user.refreshToken = null;
-        user.tokenExpiresAt = null;
-        await _isar.userCollections.put(user);
-      });
-    }
+    await sl<AuthRepository>().logout();
+    sl<NetworkService>().clearTokens();
 
     // Navigate to login and clear stack
     if (mounted) {
       Navigator.pushNamedAndRemoveUntil(
         context,
-        '/login',
+        AppRoutes.login,
         (route) => false,
       );
     }

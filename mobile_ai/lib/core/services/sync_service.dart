@@ -13,6 +13,7 @@ import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart'
 import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
 import 'package:mobile_ai/core/database/models/inventory/stock_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 
 class SyncService {
   final ApiClient _apiClient;
@@ -97,19 +98,31 @@ class SyncService {
 
         // 4. Update local status based on response
         if (response.statusCode == 200 || response.statusCode == 201) {
-          // Response contains created_items and errors
-          
+          final data = response.data as Map<String, dynamic>? ?? const {};
+          final errorCount = (data['error_count'] as int?) ?? 0;
+          final errors = (data['errors'] as List?) ?? const [];
+
           await isar.writeTxn(() async {
             for (final item in itemsToPush) {
-               // Mark as completed for now
-               // In production, check if item.queueId is in created_items
-               item.status = SyncQueueStatus.completed;
+               if (errorCount > 0) {
+                 item.status = SyncQueueStatus.failed;
+                 item.lastError = errors.isNotEmpty
+                     ? errors.first.toString()
+                     : 'Backend rejected sync payload';
+               } else {
+                 item.status = SyncQueueStatus.completed;
+                 item.lastError = null;
+               }
                item.lastAttemptAt = DateTime.now();
                await isar.syncQueueCollections.put(item);
             }
           });
           
-          _logger.i('Push successful');
+          if (errorCount > 0) {
+            _logger.w('Push completed with backend errors: $errorCount');
+          } else {
+            _logger.i('Push successful');
+          }
         }
       } catch (e) {
         // Handle API error
@@ -217,6 +230,16 @@ class SyncService {
       _logger.i('✅ Finished processing ${list.length} employee tasks');
     } else {
       _logger.w('⚠️ No employee_tasks key in sync response entities');
+    }
+
+    // Process Task Reports
+    if (entities.containsKey('task_reports')) {
+      final list = entities['task_reports'] as List;
+      _logger.i('📥 Processing ${list.length} task reports from sync');
+      for (var json in list) {
+        await _syncTaskReport(json, isar);
+      }
+      _logger.i('✅ Finished processing ${list.length} task reports');
     }
     
     // Add logic for SKUs, Locations, etc. here
@@ -350,6 +373,18 @@ class SyncService {
     task.itemsCompleted = (json['items_completed'] as num?)?.toInt() ?? 0;
     task.estimatedDurationMinutes = (json['estimated_duration_minutes'] as num?)?.toInt();
     task.notes = json['notes'];
+    if (json['ai_transfer_decision'] is Map<String, dynamic>) {
+      task.notes = _upsertAiTransferDecisionNote(
+        task.notes,
+        json['ai_transfer_decision'] as Map<String, dynamic>,
+      );
+    }
+    if (json['ai_transfer_override'] is Map<String, dynamic>) {
+      task.notes = _upsertAiTransferOverrideNote(
+        task.notes,
+        json['ai_transfer_override'] as Map<String, dynamic>,
+      );
+    }
     task.bonReferenceType = json['bon_reference_type'];
     task.bonReferenceId = json['bon_reference_id'];
     task.updatedAt = _parseDateTime(json['updated_at']) ?? DateTime.now();
@@ -359,6 +394,51 @@ class SyncService {
     await isar.employeeTaskCollections.put(task);
     _logger.i('✅ Saved task: ${task.title} (assigned to: ${task.assignedToUserId})');
   }
+
+    Future<void> _syncTaskReport(Map<String, dynamic> json, Isar isar) async {
+    final backendId = json['id']?.toString();
+    if (backendId == null || backendId.isEmpty) return;
+
+    final existing = await isar.taskReportCollections
+      .filter()
+      .backendIdEqualTo(backendId)
+      .findFirst();
+
+    final report = existing ?? TaskReportCollection();
+    report.backendId = backendId;
+    report.taskId = (json['task'] is Map)
+      ? json['task']['id']?.toString()
+      : json['task_id']?.toString();
+    report.taskTitle = (json['task'] is Map) ? json['task']['title']?.toString() : null;
+    report.reportedById = (json['reported_by'] is Map)
+      ? json['reported_by']['id']?.toString()
+      : json['reported_by_id']?.toString();
+    report.reportedByName = (json['reported_by'] is Map)
+      ? json['reported_by']['full_name']?.toString()
+      : json['reported_by_name']?.toString();
+    report.reportedByEmail = (json['reported_by'] is Map)
+      ? json['reported_by']['email']?.toString()
+      : json['reported_by_email']?.toString();
+    report.supervisorId = (json['supervisor'] is Map)
+      ? json['supervisor']['id']?.toString()
+      : json['supervisor_id']?.toString();
+    report.supervisorName = (json['supervisor'] is Map)
+      ? json['supervisor']['full_name']?.toString()
+      : json['supervisor_name']?.toString();
+    report.issues =
+      (json['issues'] as List<dynamic>?)?.map((item) => item.toString()).toList() ?? [];
+    report.description = json['description']?.toString();
+    report.status = _parseTaskReportStatus(json['status']?.toString());
+    report.reportedAt = _parseDateTime(json['reported_at']?.toString()) ?? DateTime.now();
+    report.acknowledgedAt = _parseDateTime(json['acknowledged_at']?.toString());
+    report.resolvedAt = _parseDateTime(json['resolved_at']?.toString());
+    report.supervisorNotes = json['supervisor_notes']?.toString();
+    report.createdAt = _parseDateTime(json['created_at']?.toString()) ?? report.reportedAt;
+    report.updatedAt = _parseDateTime(json['updated_at']?.toString()) ?? DateTime.now();
+    report.syncStatus = true;
+
+    await isar.taskReportCollections.put(report);
+    }
   
   BonPickingStatus _parseStatus(String? status) {
      switch (status?.toUpperCase()) {
@@ -391,6 +471,17 @@ class SyncService {
     }
   }
 
+  TaskReportStatus _parseTaskReportStatus(String? status) {
+    switch (status?.toUpperCase()) {
+      case 'ACKNOWLEDGED':
+        return TaskReportStatus.acknowledged;
+      case 'RESOLVED':
+        return TaskReportStatus.resolved;
+      default:
+        return TaskReportStatus.pending;
+    }
+  }
+
   DateTime? _parseDateTime(String? dateStr) {
     if (dateStr == null || dateStr.isEmpty) return null;
     try {
@@ -400,10 +491,43 @@ class SyncService {
     }
   }
 
+  String _upsertAiTransferDecisionNote(
+    String? existingNotes,
+    Map<String, dynamic> decision,
+  ) {
+    final lines = (existingNotes ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !line.startsWith('AI_TRANSFER_DECISION:'))
+        .toList();
+
+    lines.add('AI_TRANSFER_DECISION:${jsonEncode(decision)}');
+    return lines.join('\n');
+  }
+
+  String _upsertAiTransferOverrideNote(
+    String? existingNotes,
+    Map<String, dynamic> override,
+  ) {
+    final lines = (existingNotes ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !line.startsWith('AI_TRANSFER_OVERRIDE:'))
+        .toList();
+
+    lines.add('AI_TRANSFER_OVERRIDE:${jsonEncode(override)}');
+    return lines.join('\n');
+  }
+
   String _mapOperationToEntityType(SyncOperationType type) {
     final s = type.toString();
     if (s.contains('BonPicking')) return 'BonPicking';
     if (s.contains('BonCommande')) return 'BonCommande';
+    if (s.contains('BonReplenishment')) return 'BonReplenishment';
+    if (s.contains('BonLivraison')) return 'BonLivraison';
+    if (s.contains('BonPreparation')) return 'BonPreparation';
     if (s.contains('Stock')) return 'Stock';
     if (s.contains('TaskReport')) return 'TaskReport';
     return 'Unknown';
