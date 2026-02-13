@@ -150,7 +150,9 @@ class AdminDashboardPage extends StatelessWidget {
         icon: Icons.shopping_basket_outlined,
         label: "Manages Warehouse Vehicles",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.pushNamed(context, AppRoutes.chariots);
+        },
       ),
       _ActionItem(
         icon: Icons.rate_review_outlined,

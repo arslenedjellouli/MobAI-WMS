@@ -15,6 +15,10 @@ import 'package:mobile_ai/features/inventory/presentation/pages/product_manageme
 import 'package:mobile_ai/features/inventory/presentation/pages/add_product_page.dart';
 import 'package:mobile_ai/features/inventory/presentation/pages/edit_product_page.dart';
 
+import 'package:mobile_ai/features/inventory/presentation/pages/chariot_management_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/add_chariot_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/edit_chariot_page.dart';
+
 
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
@@ -82,6 +86,8 @@ class AppRoutes {
 
   // Chariot Routes
   static const String chariots = '/chariots';
+  static const String addChariot = '/chariots/add';
+  static const String editChariot = '/chariots/edit';
   static const String chariotDetail = '/chariots/:id';
 
   // Reservation Routes
@@ -160,6 +166,22 @@ class AppRoutes {
         final product = settings.arguments as Map<String, dynamic>;
         return MaterialPageRoute(
           builder: (_) => EditProductPage(product: product),
+        );
+
+      case chariots:
+        return MaterialPageRoute(
+          builder: (_) => const ChariotManagementPage(),
+        );
+
+      case addChariot:
+        return MaterialPageRoute(
+          builder: (_) => const AddChariotPage(),
+        );
+
+      case editChariot:
+        final chariot = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditChariotPage(chariot: chariot),
         );
 
       case bonPickings:
