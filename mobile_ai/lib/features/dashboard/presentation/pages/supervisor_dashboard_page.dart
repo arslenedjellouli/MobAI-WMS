@@ -46,7 +46,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   AppBottomTab _currentView = AppBottomTab.home;
   ProposedTaskFilter _selectedFilter = ProposedTaskFilter.forecast;
-  TaskTypeFilter _searchFilter = TaskTypeFilter.receipt;
+  TaskTypeFilter _searchFilter = TaskTypeFilter.reports;
   bool _isLoading = true;
   bool _isSyncing = false;
 
@@ -1107,8 +1107,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             (_searchController.text.isEmpty ||
                 task.code
                     .toLowerCase()
-                    .contains(_searchController.text.toLowerCase())) &&
-            task.type == _searchFilter.toTaskType())
+                        .contains(_searchController.text.toLowerCase())) &&
+                      _searchFilter.matches(task))
         .toList();
 
     return Column(
@@ -2552,11 +2552,11 @@ extension _OverrideCategoryLabel on _OverrideCategory {
   String get label {
     switch (this) {
       case _OverrideCategory.forecasting:
-        return 'Forecasting';
+        return 'Forecast';
       case _OverrideCategory.transfer:
         return 'Transfer';
       case _OverrideCategory.picking:
-        return 'Picking';
+        return 'Pick';
     }
   }
 }
@@ -3227,13 +3227,13 @@ extension TaskTypeUI on TaskType {
   String get label {
     switch (this) {
       case TaskType.receipt:
-        return 'Receipt';
+        return 'Forecast';
       case TaskType.storage:
-        return 'Storage';
+        return 'Transfer';
       case TaskType.picking:
-        return 'Picking';
+        return 'Pick';
       case TaskType.delivery:
-        return 'Delivery';
+        return 'Transfer';
     }
   }
 
@@ -3264,7 +3264,7 @@ extension TaskTypeUI on TaskType {
   }
 }
 
-enum TaskTypeFilter { receipt, storage, picking, delivery }
+enum TaskTypeFilter { reports, forecast, transfer, pick }
 
 enum ProposedTaskFilter { forecast, transfer, pick }
 
@@ -3317,40 +3317,40 @@ extension ProposedTaskFilterUI on ProposedTaskFilter {
 extension TaskTypeFilterUI on TaskTypeFilter {
   String get label {
     switch (this) {
-      case TaskTypeFilter.receipt:
-        return 'Receipt';
-      case TaskTypeFilter.storage:
-        return 'Storage';
-      case TaskTypeFilter.picking:
-        return 'Picking';
-      case TaskTypeFilter.delivery:
-        return 'Delivery';
+      case TaskTypeFilter.reports:
+        return 'Reports';
+      case TaskTypeFilter.forecast:
+        return 'Forecast';
+      case TaskTypeFilter.transfer:
+        return 'Transfer';
+      case TaskTypeFilter.pick:
+        return 'Pick';
     }
   }
 
   Color get color {
     switch (this) {
-      case TaskTypeFilter.receipt:
+      case TaskTypeFilter.reports:
+        return const Color(0xFF16A34A);
+      case TaskTypeFilter.forecast:
         return const Color(0xFF3C91CC);
-      case TaskTypeFilter.storage:
+      case TaskTypeFilter.transfer:
         return const Color(0xFF7B67BF);
-      case TaskTypeFilter.picking:
+      case TaskTypeFilter.pick:
         return const Color(0xFF006D84);
-      case TaskTypeFilter.delivery:
-        return const Color(0xFF71B643);
     }
   }
 
-  TaskType toTaskType() {
+  bool matches(_TaskCardData task) {
     switch (this) {
-      case TaskTypeFilter.receipt:
-        return TaskType.receipt;
-      case TaskTypeFilter.storage:
-        return TaskType.storage;
-      case TaskTypeFilter.picking:
-        return TaskType.picking;
-      case TaskTypeFilter.delivery:
-        return TaskType.delivery;
+      case TaskTypeFilter.reports:
+        return task.isEmployeeReport;
+      case TaskTypeFilter.forecast:
+        return task.type == TaskType.receipt;
+      case TaskTypeFilter.transfer:
+        return task.type == TaskType.storage || task.type == TaskType.delivery;
+      case TaskTypeFilter.pick:
+        return task.type == TaskType.picking;
     }
   }
 }
