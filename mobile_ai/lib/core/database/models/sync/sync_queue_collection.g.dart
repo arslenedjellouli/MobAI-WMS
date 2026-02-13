@@ -200,6 +200,7 @@ const _SyncQueueCollectionoperationTypeEnumValueMap = {
   'validateAIDecision': 10,
   'pushTaskReport': 11,
   'pullMasterData': 12,
+  'pushChariotAssignment': 13,
 };
 const _SyncQueueCollectionoperationTypeValueEnumMap = {
   0: SyncOperationType.pushBonCommande,
@@ -215,6 +216,7 @@ const _SyncQueueCollectionoperationTypeValueEnumMap = {
   10: SyncOperationType.validateAIDecision,
   11: SyncOperationType.pushTaskReport,
   12: SyncOperationType.pullMasterData,
+  13: SyncOperationType.pushChariotAssignment,
 };
 const _SyncQueueCollectionstatusEnumValueMap = {
   'pending': 0,

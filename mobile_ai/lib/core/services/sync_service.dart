@@ -13,6 +13,8 @@ import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dar
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
 import 'package:mobile_ai/core/database/models/inventory/stock_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 
@@ -250,6 +252,16 @@ class SyncService {
       _logger.w('⚠️ No employee_tasks key in sync response entities');
     }
 
+    // Process Chariot Assignments
+    if (entities.containsKey('chariot_assignments')) {
+      final list = entities['chariot_assignments'] as List;
+      _logger.i('📥 Processing ${list.length} chariot assignments from sync');
+      for (var json in list) {
+        await _syncChariotAssignment(json, isar);
+      }
+      _logger.i('✅ Finished processing ${list.length} chariot assignments');
+    }
+
     // Process Task Reports
     if (entities.containsKey('task_reports')) {
       final list = entities['task_reports'] as List;
@@ -417,6 +429,68 @@ class SyncService {
     _logger.i('✅ Saved task: ${task.title} (assigned to: ${task.assignedToUserId})');
   }
 
+  Future<void> _syncChariotAssignment(Map<String, dynamic> json, Isar isar) async {
+    final backendId = json['id']?.toString();
+    if (backendId == null || backendId.isEmpty) return;
+
+    final existing = await isar.chariotAssignmentCollections
+        .filter()
+        .backendIdEqualTo(backendId)
+        .findFirst();
+
+    final assignment = existing ?? ChariotAssignmentCollection();
+    assignment.backendId = backendId;
+
+    final backendChariotId = json['chariot_id']?.toString();
+    String resolvedChariotId = backendChariotId ?? assignment.chariotId;
+    if (backendChariotId != null && backendChariotId.isNotEmpty) {
+      final localChariot = await isar.chariotCollections
+          .filter()
+          .backendIdEqualTo(backendChariotId)
+          .findFirst();
+      if (localChariot != null) {
+        resolvedChariotId = localChariot.backendId ?? localChariot.id.toString();
+      }
+    }
+    assignment.chariotId = resolvedChariotId;
+    final assignedToId = json['assigned_to_id']?.toString();
+    final existingAssignedTo = existing?.assignedToUserId;
+    assignment.assignedToUserId =
+      (assignedToId != null && assignedToId.isNotEmpty)
+      ? assignedToId
+      : ((existingAssignedTo != null && existingAssignedTo.isNotEmpty)
+          ? existingAssignedTo
+          : 'UNKNOWN');
+    assignment.operationType = _parseChariotOperationType(json['operation_type']);
+    assignment.referenceDocumentId = json['reference_id']?.toString();
+    assignment.assignedAt =
+      _parseDateTime(json['assigned_at']) ??
+      _parseDateTime(json['created_at']) ??
+      existing?.assignedAt ??
+      DateTime.now();
+    assignment.releasedAt = _parseDateTime(json['released_at']);
+    assignment.notes = json['notes']?.toString();
+    assignment.syncStatus = true;
+    assignment.remoteUpdateAt = DateTime.now();
+
+    await isar.chariotAssignmentCollections.put(assignment);
+  }
+
+  ChariotOperationType _parseChariotOperationType(dynamic value) {
+    final raw = value?.toString().toUpperCase().trim();
+    switch (raw) {
+      case 'PICKING':
+        return ChariotOperationType.picking;
+      case 'DELIVERY':
+        return ChariotOperationType.delivery;
+      case 'RECEIPT':
+        return ChariotOperationType.receipt;
+      case 'REPLENISHMENT':
+      default:
+        return ChariotOperationType.replenishment;
+    }
+  }
+
     Future<void> _syncTaskReport(Map<String, dynamic> json, Isar isar) async {
     final backendId = json['id']?.toString();
     if (backendId == null || backendId.isEmpty) return;
@@ -550,6 +624,7 @@ class SyncService {
     if (s.contains('BonReplenishment')) return 'BonReplenishment';
     if (s.contains('BonLivraison')) return 'BonLivraison';
     if (s.contains('BonPreparation')) return 'BonPreparation';
+    if (s.contains('ChariotAssignment')) return 'ChariotAssignment';
     if (s.contains('Stock')) return 'Stock';
     if (s.contains('TaskReport')) return 'TaskReport';
     return 'Unknown';
@@ -559,6 +634,7 @@ class SyncService {
     // TaskReport is always CREATE (new reports, not updates)
     final s = type.toString();
     if (s.contains('TaskReport')) return 'CREATE';
+    if (s.contains('ChariotAssignment')) return 'CREATE';
     
     // Basic mapping, assuming all other pushes are updates/creates handled by backend processors
     // Ideally store operation in SyncQueue more explicitly

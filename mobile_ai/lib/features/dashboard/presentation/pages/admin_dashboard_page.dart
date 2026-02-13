@@ -29,9 +29,66 @@ import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
 
-class AdminDashboardPage extends StatelessWidget {
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
+
+  @override
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+  final Isar _isar = sl<IsarDatabase>().isar;
+  final ConnectivityService _connectivityService = sl<ConnectivityService>();
+
+  bool _isLoading = true;
+  bool _isSyncing = false;
+  bool _isOnline = false;
+  String _lastSync = 'Never';
+  String _adminName = 'Administrator';
+
+  @override
+  void initState() {
+    super.initState();
+    _initializePage();
+  }
+
+  Future<void> _initializePage() async {
+    final user = await _isar.userCollections.where().findFirst();
+    final isOnline = await _connectivityService.checkConnection();
+
+    if (!mounted) return;
+    setState(() {
+      _adminName = user?.fullName ?? 'Administrator';
+      _isOnline = isOnline;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _triggerSync() async {
+    if (_isSyncing) return;
+    setState(() => _isSyncing = true);
+
+    final isOnline = await _connectivityService.checkConnection();
+
+    if (!mounted) return;
+    setState(() {
+      _isOnline = isOnline;
+      if (isOnline) {
+        final now = DateTime.now();
+        final h = now.hour.toString().padLeft(2, '0');
+        final m = now.minute.toString().padLeft(2, '0');
+        _lastSync = '$h:$m';
+      }
+      _isSyncing = false;
+    });
+  }
+
+  void _handleLogout() {
+    Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -122,7 +179,7 @@ class AdminDashboardPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              "Welcome back, $name",
+              name,
               style: GoogleFonts.inter(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
