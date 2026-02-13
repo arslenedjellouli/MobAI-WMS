@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:mobile_ai/config/routes/app_routes.dart';
 
 class AdminDashboardPage extends StatelessWidget {
   const AdminDashboardPage({super.key});
@@ -133,7 +134,9 @@ class AdminDashboardPage extends StatelessWidget {
         icon: Icons.people_outline,
         label: "Manages Users",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.pushNamed(context, AppRoutes.userManagement);
+        },
       ),
       _ActionItem(
         icon: Icons.local_offer_outlined, // Tag icon

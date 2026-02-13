@@ -7,6 +7,10 @@ import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/access_help_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/pin_locked_page.dart';
 
+import 'package:mobile_ai/features/users/presentation/pages/user_management_page.dart';
+import 'package:mobile_ai/features/users/presentation/pages/add_user_page.dart';
+import 'package:mobile_ai/features/users/presentation/pages/edit_user_page.dart';
+
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
 // import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
@@ -22,6 +26,11 @@ class AppRoutes {
   // Dashboard Routes
   static const String dashboard = '/dashboard';
   static const String adminDashboard = '/admin-dashboard';
+
+  // User Management Routes
+  static const String userManagement = '/users';
+  static const String addUser = '/users/add';
+  static const String editUser = '/users/edit';
 
   // Daily Operation Routes
   static const String dailyOperation = '/daily-operation';
@@ -111,6 +120,22 @@ class AppRoutes {
           builder: (_) => const AdminDashboardPage(),
         );
 
+      case userManagement:
+        return MaterialPageRoute(
+          builder: (_) => const UserManagementPage(),
+        );
+
+      case addUser:
+        return MaterialPageRoute(
+          builder: (_) => const AddUserPage(),
+        );
+
+      case editUser:
+        final user = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditUserPage(user: user),
+        );
+
       case bonPickings:
         return MaterialPageRoute(
           builder: (_) => _placeholder('Bon Pickings', 'List of picking orders'),
@@ -148,4 +173,5 @@ class AppRoutes {
     );
   }
 }
+
 
