@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:isar/isar.dart';
@@ -37,13 +38,26 @@ import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
 import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
+import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
+import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
 import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
 import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
 import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 import 'package:mobile_ai/shared/widgets/app_bottom_bar.dart';
 
+enum SupervisorHomeSection { all, reviewOnly }
+
 class SupervisorDashboardPage extends StatefulWidget {
-  const SupervisorDashboardPage({super.key});
+  const SupervisorDashboardPage({
+    super.key,
+    this.initialTab = AppBottomTab.home,
+    this.showBottomBar = true,
+    this.homeSection = SupervisorHomeSection.all,
+  });
+
+  final AppBottomTab initialTab;
+  final bool showBottomBar;
+  final SupervisorHomeSection homeSection;
 
   @override
   State<SupervisorDashboardPage> createState() =>
@@ -57,8 +71,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
   final FloorRemoteDatasource _floorRemoteDatasource =
       FloorRemoteDatasourceImpl(apiClient: sl<ApiClient>());
-    final WarehouseRemoteDatasource _warehouseRemoteDatasource =
+  final WarehouseRemoteDatasource _warehouseRemoteDatasource =
       WarehouseRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+  final ChariotRemoteDatasource _chariotRemoteDatasource =
+      ChariotRemoteDatasourceImpl(apiClient: sl<ApiClient>());
   final Uuid _uuid = const Uuid();
   final PageController _reportedPageController = PageController(
     viewportFraction: 0.96,
@@ -102,6 +118,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _currentView = widget.initialTab;
     _bootstrap();
   }
 
@@ -134,8 +151,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   Future<void> _loadDashboardData() async {
     final users = await _isar.userCollections.where().findAll();
-    final user = users
-            .where((entry) => entry.accessToken != null && entry.accessToken!.isNotEmpty)
+    final user =
+        users
+            .where(
+              (entry) =>
+                  entry.accessToken != null && entry.accessToken!.isNotEmpty,
+            )
             .cast<UserCollection?>()
             .firstWhere((value) => value != null, orElse: () => null) ??
         (users.isNotEmpty ? users.first : null);
@@ -153,13 +174,17 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     // Only load EmployeeTasks assigned BY this supervisor (not all tasks)
     final supervisorBackendId = user?.backendId;
-    final allEmployeeTasks = await _isar.employeeTaskCollections.where().findAll();
+    final allEmployeeTasks = await _isar.employeeTaskCollections
+        .where()
+        .findAll();
     final employeeTasks = allEmployeeTasks
-      .where((task) =>
-        supervisorBackendId != null &&
-        supervisorBackendId.isNotEmpty &&
-        task.assignedByUserId == supervisorBackendId)
-      .toList();
+        .where(
+          (task) =>
+              supervisorBackendId != null &&
+              supervisorBackendId.isNotEmpty &&
+              task.assignedByUserId == supervisorBackendId,
+        )
+        .toList();
 
     final reported = <_TaskCardData>[];
     final proposed = <_TaskCardData>[];
@@ -176,7 +201,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     for (final task in employeeTasks) {
       final taskCard = _taskFromEmployeeTask(task);
       registerTask(taskCard);
-      
+
       if (task.status == EmployeeTaskStatus.pending) {
         proposed.add(taskCard);
       }
@@ -214,15 +239,16 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       }
     }
 
-    final reportTasks = reports
-        .where(
-          (report) =>
-              report.taskId != null &&
-              (report.status == TaskReportStatus.pending ||
-                  report.status == TaskReportStatus.acknowledged),
-        )
-        .toList()
-      ..sort((a, b) => b.reportedAt.compareTo(a.reportedAt));
+    final reportTasks =
+        reports
+            .where(
+              (report) =>
+                  report.taskId != null &&
+                  (report.status == TaskReportStatus.pending ||
+                      report.status == TaskReportStatus.acknowledged),
+            )
+            .toList()
+          ..sort((a, b) => b.reportedAt.compareTo(a.reportedAt));
 
     final reportedTaskIds = <String>{};
     for (final report in reportTasks) {
@@ -317,7 +343,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         }
 
         final taskCode = payload['task_code']?.toString();
-        final taskType = _taskTypeFromString(payload['task_type']?.toString()) ??
+        final taskType =
+            _taskTypeFromString(payload['task_type']?.toString()) ??
             _taskTypeFromOperation(item.operationType);
 
         actions.add(
@@ -614,9 +641,14 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         type: taskType,
       ),
       floor: _aiFloorLabel(aiFloor),
-      zoneOrSlotLabel: (aiZone != null || aiLocation != null) ? 'Zone / Place' : 'Task',
+      zoneOrSlotLabel: (aiZone != null || aiLocation != null)
+          ? 'Zone / Place'
+          : 'Task',
       zoneOrSlotValue: (aiZone != null || aiLocation != null)
-          ? [if (aiZone != null && aiZone.isNotEmpty) aiZone, if (aiLocation != null && aiLocation.isNotEmpty) aiLocation].join(' • ')
+          ? [
+              if (aiZone != null && aiZone.isNotEmpty) aiZone,
+              if (aiLocation != null && aiLocation.isNotEmpty) aiLocation,
+            ].join(' • ')
           : (task.title ?? 'Untitled'),
       skuCount: task.itemsCount ?? 0,
       issues: issues,
@@ -633,15 +665,16 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       if (decoded is Map<String, dynamic>) return decoded;
     } catch (_) {}
 
-    final prefixes = ['AI_TRANSFER_DECISION:', 'AI_DECISION:', 'ROUTING_STRATEGY:'];
+    final prefixes = [
+      'AI_TRANSFER_DECISION:',
+      'AI_DECISION:',
+      'ROUTING_STRATEGY:',
+    ];
     for (final prefix in prefixes) {
       final line = notes
           .split('\n')
           .map((value) => value.trim())
-          .firstWhere(
-            (value) => value.startsWith(prefix),
-            orElse: () => '',
-          );
+          .firstWhere((value) => value.startsWith(prefix), orElse: () => '');
       if (line.isEmpty) continue;
 
       final payload = line.replaceFirst(prefix, '').trim();
@@ -659,7 +692,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   String? _extractLocationOverrideFromNotes(String? notes) {
     if (notes == null || notes.isEmpty) return null;
 
-    final lines = notes.split('\n').map((value) => value.trim()).toList().reversed;
+    final lines = notes
+        .split('\n')
+        .map((value) => value.trim())
+        .toList()
+        .reversed;
     for (final line in lines) {
       if (!line.startsWith('LOCATION_OVERRIDE:')) continue;
       final payload = line.replaceFirst('LOCATION_OVERRIDE:', '').trim();
@@ -687,7 +724,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     List<String> dedupeSequential(List<String> nodes) {
       final normalized = <String>[];
       for (final node in nodes) {
-        if (normalized.isEmpty || normalized.last.toUpperCase() != node.toUpperCase()) {
+        if (normalized.isEmpty ||
+            normalized.last.toUpperCase() != node.toUpperCase()) {
           normalized.add(node);
         }
       }
@@ -752,7 +790,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     List<String> normalize(dynamic raw) {
       if (raw is! List) return const [];
-      return raw.map((entry) => entry.toString().trim()).where((entry) => entry.isNotEmpty).toList();
+      return raw
+          .map((entry) => entry.toString().trim())
+          .where((entry) => entry.isNotEmpty)
+          .toList();
     }
 
     final optimized = normalize(payload['optimized_path']);
@@ -774,7 +815,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   String? _routePreview(dynamic routeValue) {
     if (routeValue is! List) return null;
-    final route = routeValue.map((node) => node.toString()).where((node) => node.isNotEmpty).toList();
+    final route = routeValue
+        .map((node) => node.toString())
+        .where((node) => node.isNotEmpty)
+        .toList();
     if (route.isEmpty) return null;
     return route.join(' → ');
   }
@@ -783,7 +827,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     _TaskCardData baseTask,
     TaskReportCollection report,
   ) {
-    final reportIssues = report.issues.isNotEmpty ? report.issues : baseTask.issues;
+    final reportIssues = report.issues.isNotEmpty
+        ? report.issues
+        : baseTask.issues;
     return _TaskCardData(
       source: baseTask.source,
       localId: baseTask.localId,
@@ -816,7 +862,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         normalized.contains('access')) {
       return 'Re-assign to a free location and continue execution.';
     }
-    if (normalized.contains('wrong product') || normalized.contains('mismatch')) {
+    if (normalized.contains('wrong product') ||
+        normalized.contains('mismatch')) {
       return 'Quarantine mismatch items and continue with verified products only.';
     }
 
@@ -942,10 +989,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _enqueueTaskSync(
       task,
       action: 'REASSIGNED',
-      extra: {
-        'status': syncStatus,
-        'notes': syncNotes,
-      },
+      extra: {'status': syncStatus, 'notes': syncNotes},
       priority: 9,
     );
 
@@ -1022,7 +1066,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
-          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
           if (entity == null) return;
           entity.status = BonReplenishmentStatus.cancelled;
           entity.notes = _markDeletedNotes(entity.notes);
@@ -1067,10 +1113,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _enqueueTaskSync(
       task,
       action: 'DELETED',
-      extra: {
-        'status': syncStatus,
-        'notes': syncNotes,
-      },
+      extra: {'status': syncStatus, 'notes': syncNotes},
       priority: 9,
     );
 
@@ -1115,7 +1158,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   List<_TaskCardData> get _filteredProposedTasks {
     return _proposedTasks
-      .where((task) => _selectedFilter.matches(task.type))
+        .where((task) => _selectedFilter.matches(task.type))
         .toList();
   }
 
@@ -1230,6 +1273,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     Widget body;
     switch (_currentView) {
       case AppBottomTab.home:
+        final isReviewOnly = widget.homeSection == SupervisorHomeSection.reviewOnly;
         body = RefreshIndicator(
           onRefresh: () => _triggerSync(),
           child: SingleChildScrollView(
@@ -1238,12 +1282,14 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHeader(textTheme),
-                const SizedBox(height: 24),
-                _buildDonutChart(totalTasks),
-                const SizedBox(height: 32),
-                _buildHandleReports(textTheme),
-                const SizedBox(height: 32),
+                if (!isReviewOnly) ...[
+                  _buildHeader(textTheme),
+                  const SizedBox(height: 24),
+                  _buildDonutChart(totalTasks),
+                  const SizedBox(height: 32),
+                  _buildHandleReports(textTheme),
+                  const SizedBox(height: 32),
+                ],
                 _buildReviewProposedTasks(textTheme),
               ],
             ),
@@ -1259,10 +1305,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F9),
-      bottomNavigationBar: AppBottomBar(
-        currentTab: _currentView,
-        onTabSelected: _handleBottomTab,
-      ),
+      bottomNavigationBar: widget.showBottomBar
+          ? AppBottomBar(
+              currentTab: _currentView,
+              onTabSelected: _handleBottomTab,
+            )
+          : null,
       body: SafeArea(child: body),
     );
   }
@@ -1270,12 +1318,14 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   Widget _buildSearchView(TextTheme textTheme) {
     final allTasks = [..._reportedTasks, ..._proposedTasks];
     final filteredTasks = allTasks
-        .where((task) =>
-            (_searchController.text.isEmpty ||
-                task.code
-                    .toLowerCase()
-                        .contains(_searchController.text.toLowerCase())) &&
-                      _searchFilter.matches(task))
+        .where(
+          (task) =>
+              (_searchController.text.isEmpty ||
+                  task.code.toLowerCase().contains(
+                    _searchController.text.toLowerCase(),
+                  )) &&
+              _searchFilter.matches(task),
+        )
         .toList();
 
     return Column(
@@ -1350,7 +1400,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                           style: GoogleFonts.manrope(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
-                            color: isSelected ? Colors.white : const Color(0xFF64748B),
+                            color: isSelected
+                                ? Colors.white
+                                : const Color(0xFF64748B),
                           ),
                         ),
                       ),
@@ -1576,7 +1628,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                 ),
                 const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
@@ -1665,7 +1720,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                 height: isActive ? 10 : 8,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: isActive ? selectedColor : selectedColor.withOpacity(0.25),
+                  color: isActive
+                      ? selectedColor
+                      : selectedColor.withOpacity(0.25),
                 ),
               );
             }),
@@ -1750,7 +1807,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                 height: isActive ? 10 : 8,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: isActive ? selectedColor : selectedColor.withOpacity(0.25),
+                  color: isActive
+                      ? selectedColor
+                      : selectedColor.withOpacity(0.25),
                 ),
               );
             }),
@@ -1778,10 +1837,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         },
         borderRadius: BorderRadius.circular(20),
         child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 18,
-            vertical: 10,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
           decoration: BoxDecoration(
             color: isSelected ? color : Colors.white,
             borderRadius: BorderRadius.circular(20),
@@ -1914,12 +1970,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         final selectedChariot = _selectedMonitorChariotCode == null
             ? null
             : data.chariots
-                .where((chariot) => chariot.code == _selectedMonitorChariotCode)
-                .cast<_MonitorChariotData?>()
-                .firstWhere(
-                  (value) => value != null,
-                  orElse: () => null,
-                );
+                  .where(
+                    (chariot) => chariot.code == _selectedMonitorChariotCode,
+                  )
+                  .cast<_MonitorChariotData?>()
+                  .firstWhere((value) => value != null, orElse: () => null);
 
         final filteredOrders = data.orders.where((order) {
           return switch (_monitorOrderFilter) {
@@ -1938,8 +1993,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         final chariotsOnFloor = currentFloor == null
             ? <_MonitorChariotData>[]
             : data.chariots
-                .where((chariot) => chariot.floorLevel == currentFloor.level)
-                .toList();
+                  .where((chariot) => chariot.floorLevel == currentFloor.level)
+                  .toList();
 
         return RefreshIndicator(
           onRefresh: () async {
@@ -2009,13 +2064,15 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                           onChanged: (value) {
                             if (value == null) return;
                             setState(() {
-                              _selectedMonitorChariotCode =
-                                  value == '__ALL__' ? null : value;
+                              _selectedMonitorChariotCode = value == '__ALL__'
+                                  ? null
+                                  : value;
 
                               if (_selectedMonitorChariotCode != null) {
                                 final chosen = data.chariots.firstWhere(
                                   (chariot) =>
-                                      chariot.code == _selectedMonitorChariotCode,
+                                      chariot.code ==
+                                      _selectedMonitorChariotCode,
                                   orElse: () => data.chariots.first,
                                 );
                                 final matchedFloor = floors.indexWhere(
@@ -2185,7 +2242,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                 ),
                 const SizedBox(height: 14),
                 if (filteredOrders.isEmpty)
-                  _buildEmptyState(textTheme, 'No orders found for this filter.')
+                  _buildEmptyState(
+                    textTheme,
+                    'No orders found for this filter.',
+                  )
                 else
                   ...filteredOrders.map(
                     (order) => Padding(
@@ -2209,9 +2269,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final selected = highlightedChariotCode == null
         ? null
         : chariotsOnFloor
-            .where((entry) => entry.code == highlightedChariotCode)
-            .cast<_MonitorChariotData?>()
-            .firstWhere((value) => value != null, orElse: () => null);
+              .where((entry) => entry.code == highlightedChariotCode)
+              .cast<_MonitorChariotData?>()
+              .firstWhere((value) => value != null, orElse: () => null);
 
     return Container(
       padding: const EdgeInsets.all(10),
@@ -2259,10 +2319,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     ),
                   ),
                 ...chariotsOnFloor.map((chariot) {
-                    final left = ((chariot.column - 1) * cellWidth)
+                  final left = ((chariot.column - 1) * cellWidth)
                       .clamp(0, constraints.maxWidth - 18)
                       .toDouble();
-                    final top = ((chariot.row - 1) * cellHeight)
+                  final top = ((chariot.row - 1) * cellHeight)
                       .clamp(0, constraints.maxHeight - 18)
                       .toDouble();
                   final isActive = chariot.active;
@@ -2286,7 +2346,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                               : const Color(0xFFA3A3A3),
                           shape: BoxShape.circle,
                           border: Border.all(
-                            color: isSelected ? const Color(0xFF004C5C) : Colors.white,
+                            color: isSelected
+                                ? const Color(0xFF004C5C)
+                                : Colors.white,
                             width: isSelected ? 3 : 2,
                           ),
                         ),
@@ -2303,6 +2365,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildSelectedChariotCard(_MonitorChariotData chariot) {
+    final routeSummary = chariot.path.length < 2
+        ? 'No route points'
+        : '${chariot.path.length} points • '
+              '(${chariot.path.first.row},${chariot.path.first.column}) → '
+              '(${chariot.path.last.row},${chariot.path.last.column})';
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
@@ -2329,16 +2397,33 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             ),
           ),
           const SizedBox(height: 14),
-          _monitorInfoRow(Icons.person_outline, 'Employee', chariot.employeeName),
-          _monitorInfoRow(Icons.inventory_2_outlined, 'Transfer ID', chariot.transferId),
-          _monitorInfoRow(Icons.location_on_outlined, 'Location', chariot.locationLabel),
+          _monitorInfoRow(
+            Icons.person_outline,
+            'Employee',
+            chariot.employeeName,
+          ),
+          _monitorInfoRow(
+            Icons.inventory_2_outlined,
+            'Transfer ID',
+            chariot.transferId,
+          ),
+          _monitorInfoRow(
+            Icons.location_on_outlined,
+            'Location',
+            chariot.locationLabel,
+          ),
           if (chariot.startedAt != null)
-            _monitorInfoRow(Icons.schedule, 'Started', _minutesAgoLabel(chariot.startedAt!)),
+            _monitorInfoRow(
+              Icons.schedule,
+              'Started',
+              _minutesAgoLabel(chariot.startedAt!),
+            ),
           _monitorInfoRow(
             Icons.near_me_outlined,
             'Last Known Position',
             chariot.lastKnownPosition,
           ),
+          _monitorInfoRow(Icons.alt_route, 'Route', routeSummary),
         ],
       ),
     );
@@ -2502,561 +2587,6 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
   }
 
-  Future<void> _ensureMonitorDemoDataIfEmpty() async {
-    final floorCount = await _isar.floorCollections.where().count();
-    final sectionCount = await _isar.sectionCollections.where().count();
-    final slotCount = await _isar.slotCollections.where().count();
-    final locationCount = await _isar.locationCollections.where().count();
-    final chariotCount = await _isar.chariotCollections.where().count();
-    final assignmentCount = await _isar.chariotAssignmentCollections.where().count();
-    final orderCount =
-        await _isar.bonCommandeCollections.where().count() +
-        await _isar.bonReplenishmentCollections.where().count() +
-        await _isar.bonPickingCollections.where().count() +
-        await _isar.bonLivraisonCollections.where().count() +
-        await _isar.employeeTaskCollections.where().count();
-
-    final hasCompleteStructure =
-      floorCount > 0 && sectionCount > 0 && slotCount > 0 && locationCount > 0;
-    final hasVehicles = chariotCount > 0 && assignmentCount > 0;
-    final hasOrders = orderCount > 0;
-
-    if (hasCompleteStructure && hasVehicles && hasOrders) return;
-
-    final existingFloors = await _isar.floorCollections.where().findAll();
-    final hasDemoSeed = existingFloors.any((floor) => floor.backendId == 'demo-floor-0');
-    if (hasDemoSeed) return;
-
-    final now = DateTime.now();
-    final supervisor = await _isar.userCollections.where().findFirst();
-    final warehouseId =
-        (supervisor?.warehouseId != null && supervisor!.warehouseId!.isNotEmpty)
-        ? supervisor.warehouseId!
-        : 'demo-warehouse-1';
-
-    await _isar.writeTxn(() async {
-      final employeeOne = UserCollection.create(
-        backendId: 'demo-emp-1',
-        fullName: 'Yassine Karim',
-        email: 'demo.emp1.monitor@mobai.local',
-        role: UserRole.employee,
-        warehouseId: warehouseId,
-        createdAt: now,
-      );
-
-      final employeeTwo = UserCollection.create(
-        backendId: 'demo-emp-2',
-        fullName: 'Meryem El Idrissi',
-        email: 'demo.emp2.monitor@mobai.local',
-        role: UserRole.employee,
-        warehouseId: warehouseId,
-        createdAt: now,
-      );
-
-      final employeeThree = UserCollection.create(
-        backendId: 'demo-emp-3',
-        fullName: 'Anas Boulahcen',
-        email: 'demo.emp3.monitor@mobai.local',
-        role: UserRole.employee,
-        warehouseId: warehouseId,
-        createdAt: now,
-      );
-
-      await _isar.userCollections.putAll([employeeOne, employeeTwo, employeeThree]);
-
-      final zones = [
-        ZoneCollection.create(
-          backendId: 'demo-zone-receiving',
-          warehouseId: warehouseId,
-          name: 'Receiving Zone',
-          type: ZoneType.receiving,
-          createdAt: now,
-        ),
-        ZoneCollection.create(
-          backendId: 'demo-zone-vrac',
-          warehouseId: warehouseId,
-          name: 'VRAC Zone',
-          type: ZoneType.vrac,
-          createdAt: now,
-        ),
-        ZoneCollection.create(
-          backendId: 'demo-zone-picking',
-          warehouseId: warehouseId,
-          name: 'Picking Zone',
-          type: ZoneType.picking,
-          createdAt: now,
-        ),
-        ZoneCollection.create(
-          backendId: 'demo-zone-expedition',
-          warehouseId: warehouseId,
-          name: 'Expedition Zone',
-          type: ZoneType.expedition,
-          createdAt: now,
-        ),
-      ];
-      await _isar.zoneCollections.putAll(zones);
-
-      final floors = [
-        FloorCollection.create(
-          backendId: 'demo-floor-0',
-          warehouseId: warehouseId,
-          levelNumber: 0,
-          floorType: FloorType.ground,
-          matrixRows: 16,
-          matrixColumns: 16,
-          description: 'Ground floor for monitoring demo',
-          createdAt: now,
-        ),
-        FloorCollection.create(
-          backendId: 'demo-floor-2',
-          warehouseId: warehouseId,
-          levelNumber: 2,
-          floorType: FloorType.storage,
-          matrixRows: 16,
-          matrixColumns: 16,
-          description: 'Storage floor for monitoring demo',
-          createdAt: now,
-        ),
-      ];
-      await _isar.floorCollections.putAll(floors);
-
-      final sections = [
-        SectionCollection.create(
-          backendId: 'demo-sec-gf-picking',
-          floorId: 'demo-floor-0',
-          sectionType: SectionType.picking,
-          name: 'Ground Picking',
-          startRow: 1,
-          endRow: 16,
-          startColumn: 1,
-          endColumn: 10,
-          createdAt: now,
-        ),
-        SectionCollection.create(
-          backendId: 'demo-sec-gf-exp1',
-          floorId: 'demo-floor-0',
-          sectionType: SectionType.expedition1,
-          name: 'Expedition 1',
-          startRow: 5,
-          endRow: 12,
-          startColumn: 13,
-          endColumn: 16,
-          createdAt: now,
-        ),
-        SectionCollection.create(
-          backendId: 'demo-sec-gf-mc1',
-          floorId: 'demo-floor-0',
-          sectionType: SectionType.monteCharge1,
-          name: 'Goods Lift 1',
-          startRow: 2,
-          endRow: 3,
-          startColumn: 11,
-          endColumn: 12,
-          createdAt: now,
-        ),
-        SectionCollection.create(
-          backendId: 'demo-sec-gf-mc2',
-          floorId: 'demo-floor-0',
-          sectionType: SectionType.monteCharge2,
-          name: 'Goods Lift 2',
-          startRow: 1,
-          endRow: 2,
-          startColumn: 11,
-          endColumn: 12,
-          createdAt: now,
-        ),
-        SectionCollection.create(
-          backendId: 'demo-sec-f2-palette',
-          floorId: 'demo-floor-2',
-          sectionType: SectionType.paletteSlots,
-          name: 'Palette Slots',
-          startRow: 1,
-          endRow: 16,
-          startColumn: 1,
-          endColumn: 12,
-          createdAt: now,
-        ),
-        SectionCollection.create(
-          backendId: 'demo-sec-f2-route',
-          floorId: 'demo-floor-2',
-          sectionType: SectionType.routeSlots,
-          name: 'Route Slots',
-          startRow: 1,
-          endRow: 16,
-          startColumn: 13,
-          endColumn: 16,
-          createdAt: now,
-        ),
-      ];
-      await _isar.sectionCollections.putAll(sections);
-
-      final slots = [
-        SlotCollection.create(
-          backendId: 'demo-slot-gf-r06-c06',
-          floorId: 'demo-floor-0',
-          sectionId: 'demo-sec-gf-picking',
-          row: 6,
-          column: 6,
-          code: 'GF-R06-C06',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-gf-r08-c10',
-          floorId: 'demo-floor-0',
-          sectionId: 'demo-sec-gf-picking',
-          row: 8,
-          column: 10,
-          code: 'GF-R08-C10',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-gf-r10-c14',
-          floorId: 'demo-floor-0',
-          sectionId: 'demo-sec-gf-exp1',
-          row: 10,
-          column: 14,
-          code: 'GF-R10-C14',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-gf-r11-c15',
-          floorId: 'demo-floor-0',
-          sectionId: 'demo-sec-gf-exp1',
-          row: 11,
-          column: 15,
-          code: 'GF-R11-C15',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-f2-r04-c04',
-          floorId: 'demo-floor-2',
-          sectionId: 'demo-sec-f2-palette',
-          row: 4,
-          column: 4,
-          code: 'SF2-R04-C04',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-f2-r07-c08',
-          floorId: 'demo-floor-2',
-          sectionId: 'demo-sec-f2-palette',
-          row: 7,
-          column: 8,
-          code: 'SF2-R07-C08',
-          isStorage: true,
-          createdAt: now,
-        ),
-        SlotCollection.create(
-          backendId: 'demo-slot-f2-r09-c10',
-          floorId: 'demo-floor-2',
-          sectionId: 'demo-sec-f2-palette',
-          row: 9,
-          column: 10,
-          code: 'SF2-R09-C10',
-          isStorage: true,
-          createdAt: now,
-        ),
-      ];
-      await _isar.slotCollections.putAll(slots);
-
-      final locations = [
-        LocationCollection.create(
-          backendId: 'demo-loc-gf-0606',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-0',
-          zoneId: 'demo-zone-picking',
-          slotId: 'demo-slot-gf-r06-c06',
-          code: 'B7-0A-06-06',
-          status: LocationStatus.occupied,
-          currentCapacityUsed: 1.0,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-gf-0810',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-0',
-          zoneId: 'demo-zone-picking',
-          slotId: 'demo-slot-gf-r08-c10',
-          code: 'B7-0A-08-10',
-          status: LocationStatus.assigned,
-          reservedCapacity: 0.5,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-gf-1014',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-0',
-          zoneId: 'demo-zone-expedition',
-          slotId: 'demo-slot-gf-r10-c14',
-          code: 'B7-EXP-10-14',
-          status: LocationStatus.free,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-gf-1115',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-0',
-          zoneId: 'demo-zone-expedition',
-          slotId: 'demo-slot-gf-r11-c15',
-          code: 'B7-EXP-11-15',
-          status: LocationStatus.occupied,
-          currentCapacityUsed: 0.8,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-f2-0404',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-2',
-          zoneId: 'demo-zone-vrac',
-          slotId: 'demo-slot-f2-r04-c04',
-          code: 'B7-N2-C04',
-          status: LocationStatus.occupied,
-          currentCapacityUsed: 1.1,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-f2-0708',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-2',
-          zoneId: 'demo-zone-vrac',
-          slotId: 'demo-slot-f2-r07-c08',
-          code: 'B7-N2-C08',
-          status: LocationStatus.assigned,
-          reservedCapacity: 0.7,
-          createdAt: now,
-        ),
-        LocationCollection.create(
-          backendId: 'demo-loc-f2-0910',
-          warehouseId: warehouseId,
-          floorId: 'demo-floor-2',
-          zoneId: 'demo-zone-vrac',
-          slotId: 'demo-slot-f2-r09-c10',
-          code: 'B7-N2-C10',
-          status: LocationStatus.free,
-          createdAt: now,
-        ),
-      ];
-      await _isar.locationCollections.putAll(locations);
-
-      final skus = [
-        SKUCollection.create(
-          backendId: 'demo-sku-1',
-          skuCode: 'SKU-BULK-01',
-          name: 'Organize bulk storage',
-          createdAt: now,
-        ),
-        SKUCollection.create(
-          backendId: 'demo-sku-2',
-          skuCode: 'SKU-TRF-02',
-          name: 'Transfer pallet',
-          createdAt: now,
-        ),
-        SKUCollection.create(
-          backendId: 'demo-sku-3',
-          skuCode: 'SKU-DLV-03',
-          name: 'Delivery package',
-          createdAt: now,
-        ),
-      ];
-      await _isar.sKUCollections.putAll(skus);
-
-      final commandOrder = BonCommandeCollection.create(
-        backendId: 'demo-cmd-9CB218F5',
-        warehouseId: warehouseId,
-        employeeId: 'demo-emp-2',
-        status: BonCommandeStatus.pending,
-        totalQuantityExpected: 100,
-        totalQuantityReceived: 0,
-        createdAt: now.subtract(const Duration(minutes:26)),
-      );
-      final transferOrder = BonReplenishmentCollection.create(
-        backendId: 'demo-repl-05F62ACF',
-        warehouseId: warehouseId,
-        dailyOperationId: 'demo-day-1',
-        employeeId: 'demo-emp-1',
-        status: BonReplenishmentStatus.inProgress,
-        createdAt: now.subtract(const Duration(minutes:14)),
-      );
-      final pickingOrder = BonPickingCollection.create(
-        backendId: 'demo-pick-A2719D0',
-        warehouseId: warehouseId,
-        dailyOperationId: 'demo-day-1',
-        employeeId: 'demo-emp-3',
-        status: BonPickingStatus.pending,
-        createdAt: now.subtract(const Duration(minutes:19)),
-      );
-      final deliveryOrder = BonLivraisonCollection.create(
-        backendId: 'demo-delv-4C9112AB',
-        warehouseId: warehouseId,
-        dailyOperationId: 'demo-day-1',
-        deliveryId: 'DLV-4C9112AB',
-        employeeId: 'demo-emp-1',
-        status: BonLivraisonStatus.done,
-        createdAt: now.subtract(const Duration(minutes:43)),
-      );
-
-      await _isar.bonCommandeCollections.put(commandOrder);
-      await _isar.bonReplenishmentCollections.put(transferOrder);
-      await _isar.bonPickingCollections.put(pickingOrder);
-      await _isar.bonLivraisonCollections.put(deliveryOrder);
-
-      await _isar.bonCommandeItemCollections.putAll([
-        BonCommandeItemCollection.create(
-          backendId: 'demo-cmd-item-1',
-          bonCommandeId: 'demo-cmd-9CB218F5',
-          skuId: 'demo-sku-1',
-          quantityExpected: 35,
-          createdAt: now,
-        ),
-        BonCommandeItemCollection.create(
-          backendId: 'demo-cmd-item-2',
-          bonCommandeId: 'demo-cmd-9CB218F5',
-          skuId: 'demo-sku-2',
-          quantityExpected: 65,
-          createdAt: now,
-        ),
-      ]);
-
-      await _isar.bonReplenishmentItemCollections.putAll([
-        BonReplenishmentItemCollection.create(
-          backendId: 'demo-repl-item-1',
-          bonReplenishmentId: 'demo-repl-05F62ACF',
-          skuId: 'demo-sku-1',
-          fromLocationId: 'demo-loc-f2-0404',
-          toLocationId: 'demo-loc-gf-0606',
-          quantity: 35,
-          sequenceNumber: 1,
-          createdAt: now,
-        ),
-      ]);
-
-      await _isar.bonPickingItemCollections.putAll([
-        BonPickingItemCollection.create(
-          backendId: 'demo-pick-item-1',
-          bonPickingId: 'demo-pick-A2719D0',
-          skuId: 'demo-sku-2',
-          locationId: 'demo-loc-gf-0810',
-          quantity: 40,
-          sequenceNumber: 1,
-          createdAt: now,
-        ),
-        BonPickingItemCollection.create(
-          backendId: 'demo-pick-item-2',
-          bonPickingId: 'demo-pick-A2719D0',
-          skuId: 'demo-sku-3',
-          locationId: 'demo-loc-gf-1014',
-          quantity: 20,
-          sequenceNumber: 2,
-          createdAt: now,
-        ),
-      ]);
-
-      await _isar.bonLivraisonItemCollections.putAll([
-        BonLivraisonItemCollection.create(
-          backendId: 'demo-delv-item-1',
-          bonLivraisonId: 'demo-delv-4C9112AB',
-          skuId: 'demo-sku-3',
-          quantityDelivered: 20,
-          createdAt: now,
-        ),
-      ]);
-
-      final reportedTransfer = TaskReportCollection.create(
-        backendId: 'demo-report-1',
-        taskId: 'demo-repl-05F62ACF',
-        taskTitle: 'Transfer Order',
-        reportedById: 'demo-emp-1',
-        reportedByName: 'Yassine Karim',
-        supervisorId: _supervisorId,
-        supervisorName: _supervisorName,
-        issues: const ['blocked access'],
-        description: 'Aisle temporarily blocked while moving pallets.',
-        status: TaskReportStatus.pending,
-        reportedAt: now.subtract(const Duration(minutes:7)),
-      );
-      await _isar.taskReportCollections.put(reportedTransfer);
-
-      final chariots = [
-        ChariotCollection.create(
-          backendId: 'demo-chariot-c047',
-          code: 'C047',
-          name: 'Chariot C047',
-          status: ChariotStatus.assigned,
-          createdAt: now,
-        ),
-        ChariotCollection.create(
-          backendId: 'demo-chariot-c052',
-          code: 'C052',
-          name: 'Chariot C052',
-          status: ChariotStatus.assigned,
-          createdAt: now,
-        ),
-        ChariotCollection.create(
-          backendId: 'demo-chariot-c035',
-          code: 'C035',
-          name: 'Chariot C035',
-          status: ChariotStatus.available,
-          createdAt: now,
-        ),
-        ChariotCollection.create(
-          backendId: 'demo-chariot-c078',
-          code: 'C078',
-          name: 'Chariot C078',
-          status: ChariotStatus.available,
-          createdAt: now,
-        ),
-      ];
-      await _isar.chariotCollections.putAll(chariots);
-
-      final assignments = [
-        ChariotAssignmentCollection.create(
-          backendId: 'demo-assignment-1',
-          chariotId: 'demo-chariot-c047',
-          assignedToUserId: 'demo-emp-1',
-          operationType: ChariotOperationType.replenishment,
-          referenceDocumentId: 'demo-repl-05F62ACF',
-          assignedAt: now.subtract(const Duration(minutes:14)),
-        ),
-        ChariotAssignmentCollection.create(
-          backendId: 'demo-assignment-2',
-          chariotId: 'demo-chariot-c052',
-          assignedToUserId: 'demo-emp-3',
-          operationType: ChariotOperationType.picking,
-          referenceDocumentId: 'demo-pick-A2719D0',
-          assignedAt: now.subtract(const Duration(minutes:9)),
-        ),
-        ChariotAssignmentCollection.create(
-          backendId: 'demo-assignment-3',
-          chariotId: 'demo-chariot-c035',
-          assignedToUserId: 'demo-emp-2',
-          operationType: ChariotOperationType.delivery,
-          referenceDocumentId: 'demo-delv-4C9112AB',
-          assignedAt: now.subtract(const Duration(minutes:55)),
-          releasedAt: now.subtract(const Duration(minutes:10)),
-        ),
-      ];
-      await _isar.chariotAssignmentCollections.putAll(assignments);
-
-      final extraTask = EmployeeTaskCollection.create(
-        backendId: 'demo-task-transfer-1',
-        assignedToUserId: 'demo-emp-2',
-        assignedByUserId: supervisor?.backendId,
-        title: 'Transfer emergency pallets',
-        taskType: EmployeeTaskType.storage,
-        status: EmployeeTaskStatus.completed,
-        warehouseId: warehouseId,
-        itemsCount: 12,
-        createdAt: now.subtract(const Duration(minutes:72)),
-      );
-      await _isar.employeeTaskCollections.put(extraTask);
-    });
-  }
-
   Future<_MonitorDataBundle> _loadMonitorData() async {
     final remoteFloorLayout = await _loadAdminConfiguredFloors();
 
@@ -3067,25 +2597,50 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final locations = await _isar.locationCollections.where().findAll();
     final zones = await _isar.zoneCollections.where().findAll();
     final chariots = await _isar.chariotCollections.where().findAll();
-    final assignments = await _isar.chariotAssignmentCollections.where().findAll();
+    final assignments = await _isar.chariotAssignmentCollections
+        .where()
+        .findAll();
 
     final users = await _isar.userCollections.where().findAll();
     final skus = await _isar.sKUCollections.where().findAll();
     final reports = await _isar.taskReportCollections.where().findAll();
 
     final commandes = await _isar.bonCommandeCollections.where().findAll();
-    final commandeItems = await _isar.bonCommandeItemCollections.where().findAll();
-    final replenishments = await _isar.bonReplenishmentCollections.where().findAll();
-    final replenishmentItems = await _isar.bonReplenishmentItemCollections.where().findAll();
+    final commandeItems = await _isar.bonCommandeItemCollections
+        .where()
+        .findAll();
+    final replenishments = await _isar.bonReplenishmentCollections
+        .where()
+        .findAll();
+    final replenishmentItems = await _isar.bonReplenishmentItemCollections
+        .where()
+        .findAll();
     final pickings = await _isar.bonPickingCollections.where().findAll();
-    final pickingItems = await _isar.bonPickingItemCollections.where().findAll();
+    final pickingItems = await _isar.bonPickingItemCollections
+        .where()
+        .findAll();
     final livraisons = await _isar.bonLivraisonCollections.where().findAll();
-    final livraisonItems = await _isar.bonLivraisonItemCollections.where().findAll();
+    final livraisonItems = await _isar.bonLivraisonItemCollections
+        .where()
+        .findAll();
     final employeeTasks = await _isar.employeeTaskCollections.where().findAll();
+
+    final selectedWarehouseId = _supervisorWarehouseId;
+
+    List<ChariotApiModel> remoteChariots = const [];
+    if (_isOnline) {
+      try {
+        final remoteResponse = await _chariotRemoteDatasource.getChariots(
+          pageSize: 500,
+        );
+        remoteChariots = remoteResponse.results;
+      } catch (_) {}
+    }
 
     bool idMatches(String? value, {required int localId, String? backendId}) {
       if (value == null || value.isEmpty) return false;
-      return value == localId.toString() || (backendId != null && value == backendId);
+      return value == localId.toString() ||
+          (backendId != null && value == backendId);
     }
 
     String compactId(String? backendId, int localId) {
@@ -3093,6 +2648,90 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         return backendId.split('-').first.toUpperCase();
       }
       return localId.toString();
+    }
+
+    bool matchesSelectedWarehouse(String? warehouseId) {
+      if (selectedWarehouseId == null || selectedWarehouseId.isEmpty) {
+        return true;
+      }
+      if (warehouseId == null || warehouseId.isEmpty) return false;
+      if (warehouseId == selectedWarehouseId) return true;
+
+      final normalizedWarehouseId = warehouseId.trim().toLowerCase();
+      final normalizedSelected = selectedWarehouseId.trim().toLowerCase();
+      if (normalizedWarehouseId == normalizedSelected) return true;
+
+      final selectedWarehouse = warehouses
+          .where(
+            (warehouse) =>
+                warehouse.backendId == selectedWarehouseId ||
+                warehouse.id.toString() == selectedWarehouseId ||
+                warehouse.code == selectedWarehouseId,
+          )
+          .cast<WarehouseCollection?>()
+          .firstWhere((value) => value != null, orElse: () => null);
+
+      if (selectedWarehouse == null) return false;
+
+      final aliases = <String>{
+        selectedWarehouse.id.toString().toLowerCase(),
+        selectedWarehouse.code.toLowerCase(),
+        if (selectedWarehouse.backendId != null)
+          selectedWarehouse.backendId!.toLowerCase(),
+      };
+
+      return aliases.contains(normalizedWarehouseId);
+    }
+
+    String normalizeChariotCode(String value) {
+      return value.trim().replaceFirst(RegExp(r'^#'), '').toUpperCase();
+    }
+
+    List<Map<String, dynamic>> normalizeApiRows(dynamic payload) {
+      if (payload is List) {
+        return payload.whereType<Map>().map((row) {
+          return Map<String, dynamic>.from(row);
+        }).toList();
+      }
+
+      if (payload is Map) {
+        final mapPayload = Map<String, dynamic>.from(payload);
+        final results = mapPayload['results'];
+        if (results is List) {
+          return results.whereType<Map>().map((row) {
+            return Map<String, dynamic>.from(row);
+          }).toList();
+        }
+      }
+
+      return const [];
+    }
+
+    MonitorOrderStatus monitorStatusFromBackend(String? rawStatus) {
+      final status = rawStatus?.trim().toUpperCase() ?? '';
+      if (status.contains('IN_PROGRESS') ||
+          status.contains('EN_PICKING') ||
+          status.contains('EN_REPLENISSEMENT')) {
+        return MonitorOrderStatus.inProgress;
+      }
+      if (status.contains('COMPLETE') ||
+          status.contains('COMPLETED') ||
+          status == 'DONE') {
+        return MonitorOrderStatus.complete;
+      }
+      if (status.contains('FAILED') ||
+          status.contains('CANCEL') ||
+          status.contains('ANNULE')) {
+        return MonitorOrderStatus.reported;
+      }
+      return MonitorOrderStatus.pending;
+    }
+
+    int parseQuantity(dynamic value) {
+      if (value is int) return value;
+      if (value is num) return value.round();
+      if (value == null) return 0;
+      return int.tryParse(value.toString()) ?? 0;
     }
 
     final userMap = <String, String>{};
@@ -3122,7 +2761,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           .where((entry) => entry.key.toLowerCase() == normalized.toLowerCase())
           .map((entry) => entry.value)
           .cast<String?>()
-          .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null);
+          .firstWhere(
+            (value) => value != null && value.trim().isNotEmpty,
+            orElse: () => null,
+          );
       return caseInsensitive;
     }
 
@@ -3161,7 +2803,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     if (_isOnline && unresolvedWarehouseIds.isNotEmpty) {
       try {
-        final remoteWarehouses = await _warehouseRemoteDatasource.getWarehouses();
+        final remoteWarehouses = await _warehouseRemoteDatasource
+            .getWarehouses();
         for (final warehouse in remoteWarehouses) {
           if (warehouse.name.trim().isEmpty) continue;
           warehouseNameMap[warehouse.id] = warehouse.name;
@@ -3188,9 +2831,46 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         .map((entry) => entry.taskId!)
         .toSet();
 
-    final floorData = _buildMonitorFloorsFromAdmin(remoteFloorLayout);
+    final scopedLocalFloors = floors
+        .where((floor) => matchesSelectedWarehouse(floor.warehouseId))
+        .toList();
+    final scopedFloorIds = scopedLocalFloors
+        .map((floor) => floor.backendId ?? floor.id.toString())
+        .toSet();
+    final scopedSections = sections
+        .where((section) => scopedFloorIds.contains(section.floorId))
+        .toList();
+    final scopedSlots = slots
+        .where((slot) => scopedFloorIds.contains(slot.floorId))
+        .toList();
+    final scopedLocations = locations
+        .where((location) => matchesSelectedWarehouse(location.warehouseId))
+        .toList();
+
+    bool remoteFloorsMatchSelectedWarehouse(List<FloorApiModel> remoteFloors) {
+      if (remoteFloors.isEmpty) return false;
+      return remoteFloors.every(
+        (floor) =>
+            floor.warehouseId.isNotEmpty &&
+            matchesSelectedWarehouse(floor.warehouseId),
+      );
+    }
+
+    final useRemoteFloorData = remoteFloorsMatchSelectedWarehouse(
+      remoteFloorLayout,
+    );
+
+    final floorData = useRemoteFloorData
+        ? _buildMonitorFloorsFromAdmin(remoteFloorLayout)
+        : _buildMonitorFloors(
+            floors: scopedLocalFloors,
+            sections: scopedSections,
+            slots: scopedSlots,
+            locations: scopedLocations,
+          );
     String? apiWarehouseName;
     for (final floor in remoteFloorLayout) {
+      if (!matchesSelectedWarehouse(floor.warehouseId)) continue;
       final candidate = floor.warehouseName?.trim();
       if (candidate != null && candidate.isNotEmpty) {
         apiWarehouseName = candidate;
@@ -3199,24 +2879,31 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     final localFloorWarehouseIds = floors
-      .map((floor) => floor.warehouseId)
-      .where((id) => id.isNotEmpty)
-      .toSet()
-      .toList();
+        .map((floor) => floor.warehouseId)
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
 
-    final activeWarehouseNameCandidate = apiWarehouseName ??
-      tryResolveWarehouseName(_supervisorWarehouseId) ??
-      (remoteFloorLayout.isNotEmpty
-        ? tryResolveWarehouseName(remoteFloorLayout.first.warehouseId)
-        : null) ??
-      localFloorWarehouseIds
-        .map(tryResolveWarehouseName)
-        .cast<String?>()
-        .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null) ??
-      warehouses
-        .map((warehouse) => warehouse.name)
-        .cast<String?>()
-        .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null);
+    final activeWarehouseNameCandidate =
+        apiWarehouseName ??
+        tryResolveWarehouseName(selectedWarehouseId) ??
+        (remoteFloorLayout.isNotEmpty
+            ? tryResolveWarehouseName(remoteFloorLayout.first.warehouseId)
+            : null) ??
+        localFloorWarehouseIds
+            .map(tryResolveWarehouseName)
+            .cast<String?>()
+            .firstWhere(
+              (value) => value != null && value.trim().isNotEmpty,
+              orElse: () => null,
+            ) ??
+        warehouses
+            .map((warehouse) => warehouse.name)
+            .cast<String?>()
+            .firstWhere(
+              (value) => value != null && value.trim().isNotEmpty,
+              orElse: () => null,
+            );
 
     final locationResolver = _MonitorLocationResolver(
       floors: floors,
@@ -3225,11 +2912,25 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       zones: zones,
     );
 
+    final remoteChariotByCode = <String, ChariotApiModel>{};
+    for (final remote in remoteChariots) {
+      final normalizedCode = normalizeChariotCode(remote.code);
+      if (normalizedCode.isEmpty) continue;
+      remoteChariotByCode[normalizedCode] = remote;
+    }
+
     final orders = <_MonitorOrderData>[];
 
     for (final item in commandes) {
+      if (!matchesSelectedWarehouse(item.warehouseId)) continue;
       final itemRows = commandeItems
-          .where((entry) => idMatches(entry.bonCommandeId, localId: item.id, backendId: item.backendId))
+          .where(
+            (entry) => idMatches(
+              entry.bonCommandeId,
+              localId: item.id,
+              backendId: item.backendId,
+            ),
+          )
           .toList();
 
       final location = const _MonitorResolvedLocation(
@@ -3261,13 +2962,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           products: itemRows.isEmpty
               ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
               : itemRows
-                  .map(
-                    (entry) => _MonitorProductLine(
-                      product: skuMap[entry.skuId] ?? entry.skuId,
-                      quantity: entry.quantityExpected,
-                    ),
-                  )
-                  .toList(),
+                    .map(
+                      (entry) => _MonitorProductLine(
+                        product: skuMap[entry.skuId] ?? entry.skuId,
+                        quantity: entry.quantityExpected,
+                      ),
+                    )
+                    .toList(),
           floorLevel: location.floorLevel,
           row: null,
           column: null,
@@ -3281,16 +2982,26 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in replenishments) {
+      if (!matchesSelectedWarehouse(item.warehouseId)) continue;
       final itemRows = replenishmentItems
-          .where((entry) => idMatches(entry.bonReplenishmentId, localId: item.id, backendId: item.backendId))
+          .where(
+            (entry) => idMatches(
+              entry.bonReplenishmentId,
+              localId: item.id,
+              backendId: item.backendId,
+            ),
+          )
           .toList();
-      final location = locationResolver.resolve(itemRows.map((entry) => entry.toLocationId));
+      final location = locationResolver.resolve(
+        itemRows.map((entry) => entry.toLocationId),
+      );
 
       final orderStatus = reportedTaskIds.contains(item.backendId)
           ? MonitorOrderStatus.reported
           : switch (item.status) {
               BonReplenishmentStatus.pending => MonitorOrderStatus.pending,
-              BonReplenishmentStatus.inProgress => MonitorOrderStatus.inProgress,
+              BonReplenishmentStatus.inProgress =>
+                MonitorOrderStatus.inProgress,
               BonReplenishmentStatus.completed => MonitorOrderStatus.complete,
               BonReplenishmentStatus.cancelled => MonitorOrderStatus.complete,
             };
@@ -3310,13 +3021,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           products: itemRows.isEmpty
               ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
               : itemRows
-                  .map(
-                    (entry) => _MonitorProductLine(
-                      product: skuMap[entry.skuId] ?? entry.skuId,
-                      quantity: entry.quantity,
-                    ),
-                  )
-                  .toList(),
+                    .map(
+                      (entry) => _MonitorProductLine(
+                        product: skuMap[entry.skuId] ?? entry.skuId,
+                        quantity: entry.quantity,
+                      ),
+                    )
+                    .toList(),
           floorLevel: location.floorLevel,
           row: location.row,
           column: location.column,
@@ -3330,10 +3041,19 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in pickings) {
+      if (!matchesSelectedWarehouse(item.warehouseId)) continue;
       final itemRows = pickingItems
-          .where((entry) => idMatches(entry.bonPickingId, localId: item.id, backendId: item.backendId))
+          .where(
+            (entry) => idMatches(
+              entry.bonPickingId,
+              localId: item.id,
+              backendId: item.backendId,
+            ),
+          )
           .toList();
-      final location = locationResolver.resolve(itemRows.map((entry) => entry.locationId));
+      final location = locationResolver.resolve(
+        itemRows.map((entry) => entry.locationId),
+      );
 
       final orderStatus = reportedTaskIds.contains(item.backendId)
           ? MonitorOrderStatus.reported
@@ -3359,13 +3079,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           products: itemRows.isEmpty
               ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
               : itemRows
-                  .map(
-                    (entry) => _MonitorProductLine(
-                      product: skuMap[entry.skuId] ?? entry.skuId,
-                      quantity: entry.quantity,
-                    ),
-                  )
-                  .toList(),
+                    .map(
+                      (entry) => _MonitorProductLine(
+                        product: skuMap[entry.skuId] ?? entry.skuId,
+                        quantity: entry.quantity,
+                      ),
+                    )
+                    .toList(),
           floorLevel: location.floorLevel,
           row: location.row,
           column: location.column,
@@ -3379,8 +3099,15 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in livraisons) {
+      if (!matchesSelectedWarehouse(item.warehouseId)) continue;
       final itemRows = livraisonItems
-          .where((entry) => idMatches(entry.bonLivraisonId, localId: item.id, backendId: item.backendId))
+          .where(
+            (entry) => idMatches(
+              entry.bonLivraisonId,
+              localId: item.id,
+              backendId: item.backendId,
+            ),
+          )
           .toList();
       final location = const _MonitorResolvedLocation(
         floorLevel: 0,
@@ -3412,13 +3139,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           products: itemRows.isEmpty
               ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
               : itemRows
-                  .map(
-                    (entry) => _MonitorProductLine(
-                      product: skuMap[entry.skuId] ?? entry.skuId,
-                      quantity: entry.quantityDelivered,
-                    ),
-                  )
-                  .toList(),
+                    .map(
+                      (entry) => _MonitorProductLine(
+                        product: skuMap[entry.skuId] ?? entry.skuId,
+                        quantity: entry.quantityDelivered,
+                      ),
+                    )
+                    .toList(),
           floorLevel: location.floorLevel,
           row: null,
           column: null,
@@ -3432,6 +3159,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final task in employeeTasks) {
+      if (!matchesSelectedWarehouse(task.warehouseId)) continue;
       final baseStatus = switch (task.status) {
         EmployeeTaskStatus.pending => MonitorOrderStatus.pending,
         EmployeeTaskStatus.inProgress => MonitorOrderStatus.inProgress,
@@ -3448,15 +3176,19 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
       final title = switch (task.taskType) {
         EmployeeTaskType.receipt => 'Command Order',
-        EmployeeTaskType.storage || EmployeeTaskType.replenishment => 'Transfer Order',
-        EmployeeTaskType.picking || EmployeeTaskType.preparation => 'Picking Order',
+        EmployeeTaskType.storage ||
+        EmployeeTaskType.replenishment => 'Transfer Order',
+        EmployeeTaskType.picking ||
+        EmployeeTaskType.preparation => 'Picking Order',
         EmployeeTaskType.delivery => 'Delivery Order',
       };
 
       final typeIcon = switch (task.taskType) {
         EmployeeTaskType.receipt => Icons.inventory_2_outlined,
-        EmployeeTaskType.storage || EmployeeTaskType.replenishment => Icons.inventory_outlined,
-        EmployeeTaskType.picking || EmployeeTaskType.preparation => Icons.route_outlined,
+        EmployeeTaskType.storage ||
+        EmployeeTaskType.replenishment => Icons.inventory_outlined,
+        EmployeeTaskType.picking ||
+        EmployeeTaskType.preparation => Icons.route_outlined,
         EmployeeTaskType.delivery => Icons.local_shipping_outlined,
       };
 
@@ -3486,35 +3218,256 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       );
     }
 
+    final remoteAssignmentByChariotCode = <String, Map<String, String>>{};
+    final remoteOrderByReferenceId = <String, _MonitorOrderData>{};
+
+    if (_isOnline) {
+      try {
+        final assignmentsResponse = await _apiClient.get(
+          '/v1/operations/assignments/active/',
+          queryParameters: {'page_size': 500},
+        );
+
+        final assignmentRows = normalizeApiRows(assignmentsResponse.data);
+        final replenishmentRefs = <String>{};
+        final pickingRefs = <String>{};
+
+        for (final row in assignmentRows) {
+          final chariotCode = normalizeChariotCode(
+            row['chariot_code']?.toString() ?? '',
+          );
+          final referenceId = row['reference_id']?.toString().trim() ?? '';
+          final operationType =
+              row['operation_type']?.toString().trim().toUpperCase() ?? '';
+
+          if (chariotCode.isEmpty || referenceId.isEmpty) continue;
+
+          remoteAssignmentByChariotCode[chariotCode] = {
+            'referenceId': referenceId,
+            'operationType': operationType,
+          };
+
+          if (operationType == 'REPLENISHMENT') {
+            replenishmentRefs.add(referenceId);
+          } else if (operationType == 'PICKING') {
+            pickingRefs.add(referenceId);
+          }
+        }
+
+        Future<Map<String, dynamic>?> fetchDetail(String endpoint) async {
+          try {
+            final detailResponse = await _apiClient.get(
+              endpoint,
+              options: Options(
+                validateStatus: (status) => (status ?? 0) < 500,
+              ),
+            );
+            if (detailResponse.statusCode == 404) {
+              return null;
+            }
+            if (detailResponse.data is Map) {
+              return Map<String, dynamic>.from(detailResponse.data as Map);
+            }
+          } catch (_) {}
+          return null;
+        }
+
+        Future<void> loadRemoteOrder({
+          required String referenceId,
+          required String title,
+          required IconData icon,
+          required String endpoint,
+          required String operationType,
+        }) async {
+          final detail = await fetchDetail(endpoint);
+          if (detail == null) return;
+
+          final status = monitorStatusFromBackend(
+            detail['status']?.toString(),
+          );
+          final routeNodes = _deriveMonitorRouteNodesFromNotes(
+            notes: detail['notes']?.toString(),
+            status: status,
+          );
+
+          final locationCode = routeNodes.reversed
+              .firstWhere((node) => node.trim().isNotEmpty, orElse: () => '')
+              .trim();
+          final resolvedLocation = locationCode.isEmpty
+              ? const _MonitorResolvedLocation(
+                  floorLevel: 0,
+                  locationLabel: 'Unknown location',
+                  lastKnownPosition: 'Unknown',
+                )
+              : locationResolver.resolve([locationCode]);
+
+          final items = (detail['items'] is List)
+              ? (detail['items'] as List)
+                    .whereType<Map>()
+                .map((entry) => Map<String, dynamic>.from(entry))
+                    .toList()
+              : const <Map<String, dynamic>>[];
+
+          final products = items.isEmpty
+              ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
+              : items.map((entry) {
+                  final skuCode =
+                      entry['sku_code']?.toString() ??
+                      entry['sku']?.toString() ??
+                      'SKU';
+                  final quantity = operationType == 'PICKING'
+                      ? parseQuantity(entry['quantity_requested'])
+                      : parseQuantity(entry['quantity']);
+                  return _MonitorProductLine(product: skuCode, quantity: quantity);
+                }).toList();
+
+          final numero = detail['numero']?.toString().trim();
+          final warehouseId = detail['warehouse']?.toString();
+          remoteOrderByReferenceId[referenceId] = _MonitorOrderData(
+            id: 'remote-$referenceId',
+            title: title,
+            displayId:
+                (numero != null && numero.isNotEmpty)
+                ? numero
+                : referenceId.split('-').first.toUpperCase(),
+            warehouseName:
+              warehouseId != null && warehouseId.isNotEmpty
+              ? resolveWarehouseName(warehouseId)
+              : (activeWarehouseNameCandidate ?? 'Unknown Warehouse'),
+            employeeName: detail['assigned_to_name']?.toString().trim().isNotEmpty ==
+                    true
+                ? detail['assigned_to_name'].toString().trim()
+                : 'Unknown',
+            status: status,
+            products: products,
+            floorLevel: resolvedLocation.floorLevel,
+            row: resolvedLocation.row,
+            column: resolvedLocation.column,
+            locationLabel: resolvedLocation.locationLabel,
+            lastKnownPosition: resolvedLocation.lastKnownPosition,
+            icon: icon,
+            referenceId: referenceId,
+            routeNodes: routeNodes,
+          );
+        }
+
+        for (final referenceId in replenishmentRefs) {
+          await loadRemoteOrder(
+            referenceId: referenceId,
+            title: 'Transfer Order',
+            icon: Icons.inventory_outlined,
+            endpoint: '/bon-replenishment/$referenceId/',
+            operationType: 'REPLENISHMENT',
+          );
+        }
+
+        for (final referenceId in pickingRefs) {
+          await loadRemoteOrder(
+            referenceId: referenceId,
+            title: 'Picking Order',
+            icon: Icons.route_outlined,
+            endpoint: '/bon-picking/$referenceId/',
+            operationType: 'PICKING',
+          );
+        }
+      } catch (_) {}
+    }
+
     orders.sort((a, b) => b.id.compareTo(a.id));
 
-    final activeAssignments = assignments.where((entry) => entry.isActive).toList();
+    final orderReferenceIds = orders.map((order) => order.referenceId).toSet();
+
+    final activeAssignments = assignments
+        .where((entry) => entry.isActive)
+        .toList();
     final monitorChariots = <_MonitorChariotData>[];
+    final processedChariotCodes = <String>{};
 
     for (final chariot in chariots) {
+      final normalizedCode = normalizeChariotCode(chariot.code);
+      processedChariotCodes.add(normalizedCode);
+      final remoteChariot = remoteChariotByCode[normalizedCode];
+
       final assignment = activeAssignments
           .where(
-            (entry) =>
-                idMatches(entry.chariotId, localId: chariot.id, backendId: chariot.backendId),
+            (entry) => idMatches(
+              entry.chariotId,
+              localId: chariot.id,
+              backendId: chariot.backendId,
+            ),
           )
           .cast<ChariotAssignmentCollection?>()
           .firstWhere((value) => value != null, orElse: () => null);
+      final remoteAssignment = remoteAssignmentByChariotCode[normalizedCode];
+
+      final referenceCandidates = <String>{
+        if (assignment?.referenceDocumentId != null &&
+            assignment!.referenceDocumentId!.trim().isNotEmpty)
+          assignment.referenceDocumentId!.trim(),
+        if (remoteAssignment != null &&
+            (remoteAssignment['referenceId']?.trim().isNotEmpty ?? false))
+          remoteAssignment['referenceId']!.trim(),
+      };
 
       _MonitorOrderData? linkedOrder;
-      if (assignment?.referenceDocumentId != null && assignment!.referenceDocumentId!.isNotEmpty) {
+      if (referenceCandidates.isNotEmpty) {
         linkedOrder = orders
-            .where((order) =>
-                order.referenceId == assignment.referenceDocumentId ||
-                order.displayId == assignment.referenceDocumentId)
+            .where(
+              (order) =>
+                  referenceCandidates.contains(order.referenceId) ||
+                  referenceCandidates.contains(order.displayId),
+            )
             .cast<_MonitorOrderData?>()
             .firstWhere((value) => value != null, orElse: () => null);
+
+        if (linkedOrder == null) {
+          for (final referenceId in referenceCandidates) {
+            final remoteOrder = remoteOrderByReferenceId[referenceId];
+            if (remoteOrder != null) {
+              linkedOrder = remoteOrder;
+              break;
+            }
+          }
+        }
       }
 
-      final floorLevel = linkedOrder?.floorLevel ?? 0;
+      final hasLinkedReference = referenceCandidates.any(
+        (referenceId) =>
+            orderReferenceIds.contains(referenceId) ||
+            remoteOrderByReferenceId.containsKey(referenceId),
+      );
+      if (assignment != null &&
+          !hasLinkedReference &&
+          remoteAssignment == null) {
+        continue;
+      }
+
+      if (assignment == null && remoteChariot == null) {
+        continue;
+      }
+
+      final resolvedCurrentLocation = locationResolver.resolve([
+        if (remoteChariot?.currentLocation != null &&
+            remoteChariot!.currentLocation!.trim().isNotEmpty)
+          remoteChariot.currentLocation!.trim(),
+        if (remoteChariot?.locationCode != null &&
+            remoteChariot!.locationCode!.trim().isNotEmpty)
+          remoteChariot.locationCode!.trim(),
+      ]);
+
+      final hasResolvedCurrentLocation =
+          resolvedCurrentLocation.locationLabel != 'Unknown location';
+
+      final floorLevel = hasResolvedCurrentLocation
+          ? resolvedCurrentLocation.floorLevel
+          : (linkedOrder?.floorLevel ?? 0);
       final floorForBounds = floorData
           .where((entry) => entry.level == floorLevel)
           .cast<_MonitorFloorData?>()
-          .firstWhere((value) => value != null, orElse: () => floorData.isNotEmpty ? floorData.first : null);
+          .firstWhere(
+            (value) => value != null,
+            orElse: () => floorData.isNotEmpty ? floorData.first : null,
+          );
       final rows = floorForBounds?.rows ?? 16;
       final cols = floorForBounds?.columns ?? 16;
 
@@ -3524,7 +3477,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       );
 
       final baseRow = (linkedOrder?.row ?? expeditionPoint.row).clamp(1, rows);
-      final baseColumn = (linkedOrder?.column ?? expeditionPoint.column).clamp(1, cols);
+      final baseColumn = (linkedOrder?.column ?? expeditionPoint.column).clamp(
+        1,
+        cols,
+      );
+
+      final resolvedRow = resolvedCurrentLocation.row?.clamp(1, rows);
+      final resolvedColumn = resolvedCurrentLocation.column?.clamp(1, cols);
 
       final routedPath = linkedOrder == null
           ? const <_GridPoint>[]
@@ -3536,41 +3495,175 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
               columns: cols,
             );
 
-      final path = routedPath.isNotEmpty
-          ? routedPath
-          : linkedOrder != null && linkedOrder.row != null && linkedOrder.column != null
-          ? _buildManhattanPath(
-              startRow: expeditionPoint.row,
-              startColumn: expeditionPoint.column,
-              endRow: baseRow,
-              endColumn: baseColumn,
-            )
-          : [
-              expeditionPoint,
-            ];
+      final path = routedPath;
 
       final marker = path.isNotEmpty
           ? path.last
-          : _GridPoint(row: baseRow, column: baseColumn);
+          : _GridPoint(
+              row: resolvedRow ?? baseRow,
+              column: resolvedColumn ?? baseColumn,
+            );
+
+      final isRemoteActive =
+          remoteChariot != null &&
+          (remoteChariot.status.toUpperCase() == 'IN_USE' ||
+              remoteChariot.status.toUpperCase() == 'BUSY');
+
+      final locationLabel = hasResolvedCurrentLocation
+          ? resolvedCurrentLocation.locationLabel
+          : linkedOrder?.locationLabel ?? 'Unknown location';
+
+      final lastKnownPosition = hasResolvedCurrentLocation
+          ? resolvedCurrentLocation.lastKnownPosition
+          : (remoteChariot?.currentPosition != null &&
+                    remoteChariot!.currentPosition!.trim().isNotEmpty
+                ? remoteChariot.currentPosition!.trim()
+                : (linkedOrder?.lastKnownPosition ?? 'Unknown'));
 
       monitorChariots.add(
         _MonitorChariotData(
           code: '#${chariot.code}',
-          active: assignment != null,
+          active: assignment != null || remoteAssignment != null || isRemoteActive,
           floorLevel: floorLevel,
           row: marker.row,
           column: marker.column,
-          employeeName: linkedOrder?.employeeName ?? (assignment == null ? 'Unassigned' : (userMap[assignment.assignedToUserId] ?? 'Unknown')),
-          transferId: linkedOrder?.displayId ?? '-',
-          locationLabel: linkedOrder?.locationLabel ?? 'Floor $floorLevel, Zone #Num',
+          employeeName:
+              linkedOrder?.employeeName ??
+              remoteChariot?.operatorName ??
+              (assignment == null
+                  ? 'Unassigned'
+                  : (userMap[assignment.assignedToUserId] ?? 'Unknown')),
+          transferId:
+              linkedOrder?.displayId ??
+              assignment?.referenceDocumentId ??
+              remoteAssignment?['referenceId'] ??
+              '-',
+          locationLabel: locationLabel,
           startedAt: assignment?.assignedAt,
-          lastKnownPosition: linkedOrder?.lastKnownPosition ?? 'Expedition Zone',
+          lastKnownPosition: lastKnownPosition,
           path: path,
+          debugReferenceId: referenceCandidates.isNotEmpty
+              ? referenceCandidates.first
+              : null,
+          debugOperationType:
+              (remoteAssignment?['operationType'] as String?) ??
+              assignment?.operationType?.name ??
+              'UNKNOWN',
+          debugRouteNodeCount: linkedOrder?.routeNodes.length,
+          debugDataSource:
+              assignment != null && remoteAssignment != null
+                  ? 'local+remote'
+                  : (assignment != null
+                      ? 'local'
+                      : (remoteAssignment != null ? 'remote' : 'none')),
         ),
       );
     }
 
-    final resolvedActiveWarehouseName = activeWarehouseNameCandidate ??
+    for (final remote in remoteChariots) {
+      final normalizedCode = normalizeChariotCode(remote.code);
+      if (normalizedCode.isEmpty ||
+          processedChariotCodes.contains(normalizedCode)) {
+        continue;
+      }
+
+      final remoteAssignment = remoteAssignmentByChariotCode[normalizedCode];
+      _MonitorOrderData? linkedOrder;
+      if (remoteAssignment != null) {
+        final referenceId = remoteAssignment['referenceId'];
+        if (referenceId != null && referenceId.trim().isNotEmpty) {
+          final normalizedRef = referenceId.trim();
+          linkedOrder = orders
+              .where(
+                (order) =>
+                    order.referenceId == normalizedRef ||
+                    order.displayId == normalizedRef,
+              )
+              .cast<_MonitorOrderData?>()
+              .firstWhere((value) => value != null, orElse: () => null);
+          linkedOrder ??= remoteOrderByReferenceId[normalizedRef];
+        }
+      }
+
+      final resolvedCurrentLocation = locationResolver.resolve([
+        if (remote.currentLocation != null &&
+            remote.currentLocation!.trim().isNotEmpty)
+          remote.currentLocation!.trim(),
+        if (remote.locationCode != null &&
+            remote.locationCode!.trim().isNotEmpty)
+          remote.locationCode!.trim(),
+      ]);
+
+        final hasResolvedCurrentLocation =
+          resolvedCurrentLocation.locationLabel != 'Unknown location';
+        final floorLevel = hasResolvedCurrentLocation
+          ? resolvedCurrentLocation.floorLevel
+          : (linkedOrder?.floorLevel ?? 0);
+      final floorForBounds = floorData
+          .where((entry) => entry.level == floorLevel)
+          .cast<_MonitorFloorData?>()
+          .firstWhere(
+            (value) => value != null,
+            orElse: () => floorData.isNotEmpty ? floorData.first : null,
+          );
+      final rows = floorForBounds?.rows ?? 16;
+      final cols = floorForBounds?.columns ?? 16;
+
+        final fallbackRow = (resolvedCurrentLocation.row ?? 1).clamp(1, rows);
+        final fallbackColumn = (resolvedCurrentLocation.column ?? 1).clamp(1, cols);
+
+        final routedPath = linkedOrder == null
+          ? const <_GridPoint>[]
+          : _buildPathFromRouteNodes(
+            routeNodes: linkedOrder.routeNodes,
+            resolver: locationResolver,
+            floorLevel: floorLevel,
+            rows: rows,
+            columns: cols,
+          );
+        final marker = routedPath.isNotEmpty
+          ? routedPath.last
+          : _GridPoint(row: fallbackRow, column: fallbackColumn);
+
+      monitorChariots.add(
+        _MonitorChariotData(
+          code: '#${remote.code}',
+          active:
+            remoteAssignment != null ||
+              remote.status.toUpperCase() == 'IN_USE' ||
+              remote.status.toUpperCase() == 'BUSY',
+          floorLevel: floorLevel,
+          row: marker.row,
+          column: marker.column,
+          employeeName:
+            linkedOrder?.employeeName ??
+            (remote.operatorName?.trim().isNotEmpty == true
+              ? remote.operatorName!.trim()
+              : 'Unassigned'),
+          transferId:
+            linkedOrder?.displayId ?? remoteAssignment?['referenceId'] ?? '-',
+          locationLabel: hasResolvedCurrentLocation
+            ? resolvedCurrentLocation.locationLabel
+            : (linkedOrder?.locationLabel ?? resolvedCurrentLocation.locationLabel),
+          startedAt: null,
+          lastKnownPosition: remote.currentPosition?.trim().isNotEmpty == true
+              ? remote.currentPosition!.trim()
+            : (linkedOrder?.lastKnownPosition ??
+              resolvedCurrentLocation.lastKnownPosition),
+          path:
+            routedPath.isNotEmpty
+            ? routedPath
+            : [_GridPoint(row: marker.row, column: marker.column)],
+          debugReferenceId: remoteAssignment?['referenceId']?.toString(),
+          debugOperationType: (remoteAssignment?['operationType'] as String?) ?? 'UNKNOWN',
+          debugRouteNodeCount: linkedOrder?.routeNodes.length,
+          debugDataSource: 'remote-only',
+        ),
+      );
+    }
+
+    final resolvedActiveWarehouseName =
+        activeWarehouseNameCandidate ??
         orders
             .map((order) => order.warehouseName)
             .cast<String?>()
@@ -3596,9 +3689,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     required int endRow,
     required int endColumn,
   }) {
-    final path = <_GridPoint>[
-      _GridPoint(row: startRow, column: startColumn),
-    ];
+    final path = <_GridPoint>[_GridPoint(row: startRow, column: startColumn)];
 
     if (startColumn != endColumn) {
       path.add(_GridPoint(row: startRow, column: endColumn));
@@ -3620,17 +3711,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }) {
     if (routeNodes.isEmpty) return const [];
 
-    final resolved = routeNodes
-        .map(
-          (node) => resolver.resolveRouteNodeToPoint(
-            node: node,
-            floorLevel: floorLevel,
-            rows: rows,
-            columns: columns,
-          ),
-        )
-        .whereType<_GridPoint>()
-        .toList();
+    final resolved = <_GridPoint>[];
+    for (final node in routeNodes) {
+      final point = resolver.resolveRouteNodeToPoint(
+        node: node,
+        floorLevel: floorLevel,
+        rows: rows,
+        columns: columns,
+      );
+      if (point != null) {
+        resolved.add(point);
+      }
+    }
 
     if (resolved.isEmpty) return const [];
     if (resolved.length == 1) return resolved;
@@ -3665,7 +3757,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     String? warehouseId = _supervisorWarehouseId;
     if (warehouseId == null || warehouseId.isEmpty) {
       if (localWarehouses.isNotEmpty) {
-        warehouseId = localWarehouses.first.backendId ?? localWarehouses.first.id.toString();
+        warehouseId =
+            localWarehouses.first.backendId ??
+            localWarehouses.first.id.toString();
       }
     }
 
@@ -3689,7 +3783,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     String? supervisorWarehouseName;
     if (warehouseId != null && warehouseId.isNotEmpty) {
       for (final local in localWarehouses) {
-        final matches = warehouseId == local.id.toString() ||
+        final matches =
+            warehouseId == local.id.toString() ||
             (local.backendId != null && warehouseId == local.backendId) ||
             warehouseId == local.code;
         if (!matches) continue;
@@ -3710,7 +3805,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final local in [...prioritizedLocal, ...remainingLocal]) {
-      final floors = await tryLoadFloorsForWarehouse(local.backendId ?? local.id.toString());
+      final floors = await tryLoadFloorsForWarehouse(
+        local.backendId ?? local.id.toString(),
+      );
       if (floors.isNotEmpty) return floors;
     }
 
@@ -3721,7 +3818,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       final remainingRemote = <WarehouseApiModel>[];
       for (final remote in remoteWarehouses) {
         if (supervisorWarehouseName != null &&
-            remote.name.toLowerCase() == supervisorWarehouseName.toLowerCase()) {
+            remote.name.toLowerCase() ==
+                supervisorWarehouseName.toLowerCase()) {
           prioritizedRemote.add(remote);
         } else {
           remainingRemote.add(remote);
@@ -3737,10 +3835,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     return const [];
   }
 
-  List<_MonitorFloorData> _buildMonitorFloorsFromAdmin(List<FloorApiModel> apiFloors) {
+  List<_MonitorFloorData> _buildMonitorFloorsFromAdmin(
+    List<FloorApiModel> apiFloors,
+  ) {
     if (apiFloors.isEmpty) return const [];
 
-    final entries = apiFloors.toList()..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
+    final entries = apiFloors.toList()
+      ..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
 
     Color itemColor(String itemType) {
       switch (itemType.toUpperCase()) {
@@ -3788,7 +3889,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       monitorFloors.add(
         _MonitorFloorData(
           level: floor.levelNumber,
-          label: floor.levelNumber == 0 ? 'Ground Floor' : 'Floor ${floor.levelNumber}',
+          label: floor.levelNumber == 0
+              ? 'Ground Floor'
+              : 'Floor ${floor.levelNumber}',
           rows: rows,
           columns: cols,
           cells: cells,
@@ -3807,7 +3910,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }) {
     bool idMatches(String? value, {required int localId, String? backendId}) {
       if (value == null || value.isEmpty) return false;
-      return value == localId.toString() || (backendId != null && value == backendId);
+      return value == localId.toString() ||
+          (backendId != null && value == backendId);
     }
 
     Color sectionColor(SectionType? sectionType) {
@@ -3830,7 +3934,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       }
     }
 
-    final floorEntries = floors.toList()..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
+    final floorEntries = floors.toList()
+      ..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
 
     if (floorEntries.isEmpty) {
       final fallbackCells = List<_MonitorMapCell>.generate(
@@ -3867,7 +3972,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       );
 
       final floorSections = sections.where((section) {
-        return idMatches(section.floorId, localId: floor.id, backendId: floor.backendId);
+        return idMatches(
+          section.floorId,
+          localId: floor.id,
+          backendId: floor.backendId,
+        );
       });
 
       for (final section in floorSections) {
@@ -3885,7 +3994,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       }
 
       final floorLocations = locations.where((location) {
-        return idMatches(location.floorId, localId: floor.id, backendId: floor.backendId);
+        return idMatches(
+          location.floorId,
+          localId: floor.id,
+          backendId: floor.backendId,
+        );
       });
 
       for (final location in floorLocations) {
@@ -3908,7 +4021,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       monitorFloors.add(
         _MonitorFloorData(
           level: floor.levelNumber,
-          label: floor.levelNumber == 0 ? 'Ground Floor' : 'Floor ${floor.levelNumber}',
+          label: floor.levelNumber == 0
+              ? 'Ground Floor'
+              : 'Floor ${floor.levelNumber}',
           rows: rows,
           columns: cols,
           cells: cells,
@@ -3945,7 +4060,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
         return Dialog(
           backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
             child: Column(
@@ -4014,8 +4131,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final overrideNote = isApproved
         ? 'AI_DECISION_APPROVED_BY_SUPERVISOR'
         : (task.type == TaskType.receipt
-            ? 'FORECAST_OVERRIDE:${jsonEncode(result.forecastSkuCounts)}'
-            : 'LOCATION_OVERRIDE:${result.overrideLocationCode ?? ''}');
+              ? 'FORECAST_OVERRIDE:${jsonEncode(result.forecastSkuCounts)}'
+              : 'LOCATION_OVERRIDE:${result.overrideLocationCode ?? ''}');
 
     String? syncStatus;
     String? syncNotes;
@@ -4111,11 +4228,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       _syncProposedPageToFiltered();
     });
 
-    _addHistoryAction(
-      actionLabel,
-      task.code,
-      task.type,
-    );
+    _addHistoryAction(actionLabel, task.code, task.type);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -4173,7 +4286,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
-          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
           if (entity == null) return;
           entity.status = BonReplenishmentStatus.pending;
           entity.notes = _appendSupervisorNote(
@@ -4233,9 +4348,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       extra: {
         'status': syncStatus,
         'notes': syncNotes,
-        if (approvedGoodQuantity != null && task.source == _TaskSource.bonCommande)
+        if (approvedGoodQuantity != null &&
+            task.source == _TaskSource.bonCommande)
           'total_quantity_received': approvedGoodQuantity,
-        if (approvedGoodQuantity != null && task.source == _TaskSource.bonCommande)
+        if (approvedGoodQuantity != null &&
+            task.source == _TaskSource.bonCommande)
           'total_quantity_expected': approvedGoodQuantity,
       },
       priority: 9,
@@ -4249,9 +4366,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     _addHistoryAction('Approved', task.code, task.type);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Report for ${task.code} approved')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Report for ${task.code} approved')));
 
     await _triggerSync(showLoader: false);
   }
@@ -4265,11 +4382,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     if (selection.action == _ReportHandlingAction.deleteTask) {
       final report = await _isar.taskReportCollections.get(task.reportLocalId!);
       if (report != null) {
-        await _sendReportHandlingToBackend(
-          report,
-          selection,
-          task,
-        );
+        await _sendReportHandlingToBackend(report, selection, task);
       }
       await _deleteTask(task);
       return;
@@ -4309,7 +4422,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           title: Text(
             'Handle Report',
             style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
@@ -4338,7 +4453,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   children: availableActions
                       .map(
                         (action) => ChoiceChip(
-                          label: Text(action.label, style: GoogleFonts.manrope(fontWeight: FontWeight.w600)),
+                          label: Text(
+                            action.label,
+                            style: GoogleFonts.manrope(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                           selected: selectedAction == action,
                           onSelected: (_) {
                             setDialogState(() {
@@ -4350,7 +4470,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                       .toList(),
                 ),
                 if (selectedAction == _ReportHandlingAction.overrideOrder &&
-                    (task.type == TaskType.storage || task.type == TaskType.picking)) ...[
+                    (task.type == TaskType.storage ||
+                        task.type == TaskType.picking)) ...[
                   const SizedBox(height: 12),
                   TextField(
                     controller: locationController,
@@ -4369,16 +4490,19 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   ),
                 ],
                 if (selectedAction == _ReportHandlingAction.newReceipt ||
-                    (selectedAction == _ReportHandlingAction.overrideOrder && task.type == TaskType.delivery)) ...[
+                    (selectedAction == _ReportHandlingAction.overrideOrder &&
+                        task.type == TaskType.delivery)) ...[
                   const SizedBox(height: 12),
                   TextField(
                     controller: detailsController,
                     maxLines: 2,
                     decoration: InputDecoration(
-                      labelText: selectedAction == _ReportHandlingAction.newReceipt
+                      labelText:
+                          selectedAction == _ReportHandlingAction.newReceipt
                           ? 'New receipt infos'
                           : 'Override infos',
-                      hintText: selectedAction == _ReportHandlingAction.newReceipt
+                      hintText:
+                          selectedAction == _ReportHandlingAction.newReceipt
                           ? 'Ex: return damaged items, create corrected receipt'
                           : 'Ex: corrected delivery info / notes',
                       border: OutlineInputBorder(
@@ -4403,28 +4527,42 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
             ),
             ElevatedButton(
               onPressed: () {
-                final locationCode = locationController.text.trim().toUpperCase();
+                final locationCode = locationController.text
+                    .trim()
+                    .toUpperCase();
                 if (selectedAction == _ReportHandlingAction.overrideOrder &&
-                    (task.type == TaskType.storage || task.type == TaskType.picking) &&
+                    (task.type == TaskType.storage ||
+                        task.type == TaskType.picking) &&
                     locationCode.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Location code is required for override action.')),
+                    const SnackBar(
+                      content: Text(
+                        'Location code is required for override action.',
+                      ),
+                    ),
                   );
                   return;
                 }
 
                 final details = detailsController.text.trim();
                 if ((selectedAction == _ReportHandlingAction.newReceipt ||
-                        (selectedAction == _ReportHandlingAction.overrideOrder && task.type == TaskType.delivery)) &&
+                        (selectedAction ==
+                                _ReportHandlingAction.overrideOrder &&
+                            task.type == TaskType.delivery)) &&
                     details.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Provide required informations for this action.')),
+                    const SnackBar(
+                      content: Text(
+                        'Provide required informations for this action.',
+                      ),
+                    ),
                   );
                   return;
                 }
 
                 if (selectedAction == _ReportHandlingAction.overrideOrder &&
-                    (task.type == TaskType.storage || task.type == TaskType.picking)) {
+                    (task.type == TaskType.storage ||
+                        task.type == TaskType.picking)) {
                   final normalizedCode = _normalizeLocationCode(locationCode);
                   final overrideCategory = task.type == TaskType.storage
                       ? _OverrideCategory.transfer
@@ -4434,9 +4572,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     overrideCategory,
                   );
                   if (formatError != null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(formatError)),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(formatError)));
                     return;
                   }
                 }
@@ -4487,7 +4625,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       report.updatedAt = DateTime.now();
       await _isar.taskReportCollections.put(report);
 
-      var marker = 'REPORT_HANDLED:${selection.action.backendAction}:${report.backendId ?? report.id}';
+      var marker =
+          'REPORT_HANDLED:${selection.action.backendAction}:${report.backendId ?? report.id}';
       if (selection.locationCode != null) {
         marker = '$marker:LOC=${selection.locationCode}';
       }
@@ -4507,7 +4646,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
-          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
           if (entity == null) return;
           entity.status = BonReplenishmentStatus.pending;
           entity.notes = _appendSupervisorNote(entity.notes, marker);
@@ -4555,7 +4696,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       extra: {
         'status': syncStatus,
         'notes': syncNotes,
-        if (selection.locationCode != null) 'location_override': selection.locationCode,
+        if (selection.locationCode != null)
+          'location_override': selection.locationCode,
         if (selection.details != null) 'details': selection.details,
       },
       priority: 9,
@@ -4572,7 +4714,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Report for ${task.code} handled (${selection.action.label})')),
+      SnackBar(
+        content: Text(
+          'Report for ${task.code} handled (${selection.action.label})',
+        ),
+      ),
     );
 
     await _triggerSync(showLoader: false);
@@ -4593,7 +4739,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         data: {
           'action': selection.action.backendAction,
           'notes': 'Handled from supervisor dashboard (${task.code})',
-          if (selection.locationCode != null) 'location_code': selection.locationCode,
+          if (selection.locationCode != null)
+            'location_code': selection.locationCode,
           if (selection.details != null) 'details': selection.details,
         },
       );
@@ -4630,7 +4777,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
-          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
           if (entity == null) return;
           entity.notes = _appendSupervisorNote(entity.notes, marker);
           entity.updatedAt = DateTime.now();
@@ -4667,9 +4816,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _enqueueTaskSync(
       task,
       action: 'REJECTED',
-      extra: {
-        'notes': syncNotes,
-      },
+      extra: {'notes': syncNotes},
       priority: 9,
     );
 
@@ -4681,9 +4828,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     _addHistoryAction('Rejected', task.code, task.type);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Report for ${task.code} rejected')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Report for ${task.code} rejected')));
 
     await _triggerSync(showLoader: false);
   }
@@ -4704,9 +4851,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           keyboardType: TextInputType.number,
           decoration: InputDecoration(
             labelText: 'Good quantity to store',
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
           ),
           style: GoogleFonts.manrope(),
         ),
@@ -4727,7 +4872,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
               if (parsed == null || parsed < 0 || parsed > task.skuCount) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('Enter a value between 0 and ${task.skuCount}'),
+                    content: Text(
+                      'Enter a value between 0 and ${task.skuCount}',
+                    ),
                   ),
                 );
                 return;
@@ -4751,13 +4898,17 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
   }
 
-  Future<_AIDecisionReviewResult?> _showAIDecisionDialog(_TaskCardData task) async {
+  Future<_AIDecisionReviewResult?> _showAIDecisionDialog(
+    _TaskCardData task,
+  ) async {
     final assignmentOptions = await _loadEmployeeAssignmentOptions(task);
 
     if (assignmentOptions.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No employees available for assignment.')),
+          const SnackBar(
+            content: Text('No employees available for assignment.'),
+          ),
         );
       }
       return null;
@@ -4782,7 +4933,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           final overrideCategory = _overrideCategoryForTask(task.type);
 
           return AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             title: Text(
               'Review AI Decision',
               style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
@@ -4794,19 +4947,27 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Task ${task.code}', style: GoogleFonts.manrope(fontWeight: FontWeight.w700)),
+                    Text(
+                      'Task ${task.code}',
+                      style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+                    ),
                     const SizedBox(height: 10),
                     DropdownButtonFormField<String>(
                       value: selectedEmployeeId,
                       decoration: InputDecoration(
                         labelText: 'Assign Employee',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                       items: assignmentOptions
                           .map(
                             (candidate) => DropdownMenuItem<String>(
                               value: candidate.id,
-                              child: Text(candidate.name, style: GoogleFonts.manrope()),
+                              child: Text(
+                                candidate.name,
+                                style: GoogleFonts.manrope(),
+                              ),
                             ),
                           )
                           .toList(),
@@ -4839,7 +5000,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                       if (isForecastTask) ...[
                         Text(
                           'Select products and set quantities',
-                          style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
+                          style: GoogleFonts.manrope(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Container(
@@ -4848,7 +5011,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                             shrinkWrap: true,
                             children: skus.take(12).map((sku) {
                               final key = sku.backendId ?? sku.skuCode;
-                              final isSelected = selectedForecast.containsKey(key);
+                              final isSelected = selectedForecast.containsKey(
+                                key,
+                              );
                               final qty = selectedForecast[key] ?? 1;
                               return Row(
                                 children: [
@@ -4878,19 +5043,33 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                                         IconButton(
                                           onPressed: () {
                                             setDialogState(() {
-                                              selectedForecast[key] = math.max(1, qty - 1);
+                                              selectedForecast[key] = math.max(
+                                                1,
+                                                qty - 1,
+                                              );
                                             });
                                           },
-                                          icon: const Icon(Icons.remove_circle_outline, size: 18),
+                                          icon: const Icon(
+                                            Icons.remove_circle_outline,
+                                            size: 18,
+                                          ),
                                         ),
-                                        Text('$qty', style: GoogleFonts.manrope(fontWeight: FontWeight.w700)),
+                                        Text(
+                                          '$qty',
+                                          style: GoogleFonts.manrope(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                         IconButton(
                                           onPressed: () {
                                             setDialogState(() {
                                               selectedForecast[key] = qty + 1;
                                             });
                                           },
-                                          icon: const Icon(Icons.add_circle_outline, size: 18),
+                                          icon: const Icon(
+                                            Icons.add_circle_outline,
+                                            size: 18,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -4904,10 +5083,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                           controller: locationController,
                           textCapitalization: TextCapitalization.characters,
                           decoration: InputDecoration(
-                            labelText: overrideCategory == _OverrideCategory.transfer
+                            labelText:
+                                overrideCategory == _OverrideCategory.transfer
                                 ? 'Upper-Floor Location Code'
                                 : 'Ground-Floor Location Code',
-                            hintText: overrideCategory == _OverrideCategory.transfer
+                            hintText:
+                                overrideCategory == _OverrideCategory.transfer
                                 ? 'B7-N1-C12'
                                 : 'B7-0A-12-34',
                             border: OutlineInputBorder(
@@ -4946,37 +5127,53 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     if (task.type == TaskType.receipt) {
                       if (selectedForecast.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Select at least one product and count.')),
+                          const SnackBar(
+                            content: Text(
+                              'Select at least one product and count.',
+                            ),
+                          ),
                         );
                         return;
                       }
                       forecastPayload = Map<String, int>.from(selectedForecast);
                     } else {
-                      final enteredCode = locationController.text.trim().toUpperCase();
+                      final enteredCode = locationController.text
+                          .trim()
+                          .toUpperCase();
                       if (enteredCode.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Enter a location code.')),
+                          const SnackBar(
+                            content: Text('Enter a location code.'),
+                          ),
                         );
                         return;
                       }
 
-                      final normalizedCode = _normalizeLocationCode(enteredCode);
+                      final normalizedCode = _normalizeLocationCode(
+                        enteredCode,
+                      );
                       final formatError = _locationCodePatternError(
                         normalizedCode,
                         overrideCategory,
                       );
                       if (formatError != null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(formatError)),
-                        );
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(SnackBar(content: Text(formatError)));
                         return;
                       }
 
-                      final location = await _findLocationByNormalizedCode(normalizedCode);
+                      final location = await _findLocationByNormalizedCode(
+                        normalizedCode,
+                      );
 
                       if (location == null) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Location $enteredCode not found. Sync locations and try again.')),
+                          SnackBar(
+                            content: Text(
+                              'Location $enteredCode not found. Sync locations and try again.',
+                            ),
+                          ),
                         );
                         return;
                       }
@@ -4984,7 +5181,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                       final available = location.status == LocationStatus.free;
                       if (!available) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Location ${location.code} is occupied/assigned. Choose a free one.')),
+                          SnackBar(
+                            content: Text(
+                              'Location ${location.code} is occupied/assigned. Choose a free one.',
+                            ),
+                          ),
                         );
                         return;
                       }
@@ -5035,14 +5236,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     void addOption(String? id, {String? name}) {
       final normalizedId = (id ?? '').trim();
       if (normalizedId.isEmpty) return;
-      final resolvedName =
-          (name ?? '').trim().isNotEmpty ? name!.trim() : (nameById[normalizedId] ?? 'Employee');
+      final resolvedName = (name ?? '').trim().isNotEmpty
+          ? name!.trim()
+          : (nameById[normalizedId] ?? 'Employee');
       optionsById.putIfAbsent(
         normalizedId,
-        () => _EmployeeAssignmentOption(
-          id: normalizedId,
-          name: resolvedName,
-        ),
+        () => _EmployeeAssignmentOption(id: normalizedId, name: resolvedName),
       );
     }
 
@@ -5072,7 +5271,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         final entity = await _isar.bonCommandeCollections.get(task.localId);
         addOption(entity?.employeeId);
       case _TaskSource.bonReplenishment:
-        final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+        final entity = await _isar.bonReplenishmentCollections.get(
+          task.localId,
+        );
         addOption(entity?.employeeId);
       case _TaskSource.bonPicking:
         final entity = await _isar.bonPickingCollections.get(task.localId);
@@ -5099,7 +5300,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       addOption(commande.employeeId);
     }
 
-    final replenishments = await _isar.bonReplenishmentCollections.where().findAll();
+    final replenishments = await _isar.bonReplenishmentCollections
+        .where()
+        .findAll();
     for (final replenishment in replenishments) {
       addOption(replenishment.employeeId);
     }
@@ -5189,12 +5392,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
 enum _AIDecisionAction { approve, override }
 
-enum _ReportHandlingAction {
-  deleteTask,
-  setPending,
-  newReceipt,
-  overrideOrder,
-}
+enum _ReportHandlingAction { deleteTask, setPending, newReceipt, overrideOrder }
 
 extension _ReportHandlingActionUI on _ReportHandlingAction {
   String get label {
@@ -5415,7 +5613,10 @@ class _MonitorPathPainter extends CustomPainter {
     p.moveTo((first.column - 0.5) * cellWidth, (first.row - 0.5) * cellHeight);
 
     for (final point in path.skip(1)) {
-      p.lineTo((point.column - 0.5) * cellWidth, (point.row - 0.5) * cellHeight);
+      p.lineTo(
+        (point.column - 0.5) * cellWidth,
+        (point.row - 0.5) * cellHeight,
+      );
     }
 
     canvas.drawPath(p, paint);
@@ -5423,7 +5624,9 @@ class _MonitorPathPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MonitorPathPainter oldDelegate) {
-    return oldDelegate.path != path || oldDelegate.rows != rows || oldDelegate.columns != columns;
+    return oldDelegate.path != path ||
+        oldDelegate.rows != rows ||
+        oldDelegate.columns != columns;
   }
 }
 
@@ -5440,6 +5643,10 @@ class _MonitorChariotData {
     required this.startedAt,
     required this.lastKnownPosition,
     required this.path,
+    this.debugReferenceId,
+    this.debugOperationType,
+    this.debugRouteNodeCount,
+    this.debugDataSource,
   });
 
   final String code;
@@ -5453,6 +5660,10 @@ class _MonitorChariotData {
   final DateTime? startedAt;
   final String lastKnownPosition;
   final List<_GridPoint> path;
+  final String? debugReferenceId;
+  final String? debugOperationType;
+  final int? debugRouteNodeCount;
+  final String? debugDataSource;
 }
 
 class _MonitorProductLine {
@@ -5565,12 +5776,21 @@ class _MonitorLocationResolver {
 
   _MonitorResolvedLocation resolve(Iterable<String> locationRefs) {
     for (final ref in locationRefs) {
-      final location = _locationByKey[ref];
+      final normalizedRef = ref.trim();
+      if (normalizedRef.isEmpty) continue;
+
+      final location =
+          _locationByKey[normalizedRef] ??
+          _locationByCode[_normalizeCode(normalizedRef)];
       if (location == null) continue;
 
-      final floor = location.floorId == null ? null : _floorByKey[location.floorId!];
+      final floor = location.floorId == null
+          ? null
+          : _floorByKey[location.floorId!];
       final zone = _zoneByKey[location.zoneId];
-      final slot = location.slotId == null ? null : _slotByKey[location.slotId!];
+      final slot = location.slotId == null
+          ? null
+          : _slotByKey[location.slotId!];
 
       final floorLevel = floor?.levelNumber ?? 0;
       final floorLabel = floorLevel == 0 ? 'Ground Floor' : 'Floor $floorLevel';
@@ -5587,8 +5807,8 @@ class _MonitorLocationResolver {
 
     return const _MonitorResolvedLocation(
       floorLevel: 0,
-      locationLabel: 'Ground Floor, Zone #Num',
-      lastKnownPosition: 'Expedition Zone',
+      locationLabel: 'Unknown location',
+      lastKnownPosition: 'Unknown',
     );
   }
 
@@ -5628,20 +5848,57 @@ class _MonitorLocationResolver {
     final direct = _locationByKey[value];
     final byCode = _locationByCode[_normalizeCode(value)];
     final location = direct ?? byCode;
-    if (location == null) return null;
+    if (location != null) {
+      final floor = location.floorId == null
+          ? null
+          : _floorByKey[location.floorId!];
+      final locationFloor = floor?.levelNumber ?? 0;
+      if (locationFloor == floorLevel) {
+        if (location.slotId != null && location.slotId!.isNotEmpty) {
+          final slot = _slotByKey[location.slotId!];
+          if (slot != null) {
+            return _GridPoint(
+              row: slot.row.clamp(1, rows),
+              column: slot.column.clamp(1, columns),
+            );
+          }
+        }
+      }
+    }
 
-    final floor = location.floorId == null ? null : _floorByKey[location.floorId!];
-    final locationFloor = floor?.levelNumber ?? 0;
-    if (locationFloor != floorLevel) return null;
+    // Fallback: Parse location code format (e.g., "MON-WH-GF-R07-C06")
+    final rowMatch = RegExp(r'-R(\d+)', caseSensitive: false).firstMatch(upper);
+    final colMatch = RegExp(r'-C(\d+)', caseSensitive: false).firstMatch(upper);
+    final floorMatch = RegExp(r'-(GF|SF\d+)', caseSensitive: false).firstMatch(upper);
 
-    if (location.slotId == null || location.slotId!.isEmpty) return null;
-    final slot = _slotByKey[location.slotId!];
-    if (slot == null) return null;
+    if (rowMatch != null && colMatch != null) {
+      final parsedRow = int.tryParse(rowMatch.group(1)!);
+      final parsedCol = int.tryParse(colMatch.group(1)!);
 
-    return _GridPoint(
-      row: slot.row.clamp(1, rows),
-      column: slot.column.clamp(1, columns),
-    );
+      if (parsedRow != null && parsedCol != null) {
+        // Check floor level matches
+        if (floorMatch != null) {
+          final floorCode = floorMatch.group(1)!.toUpperCase();
+          int parsedFloor;
+          if (floorCode == 'GF') {
+            parsedFloor = 0;
+          } else if (floorCode.startsWith('SF')) {
+            parsedFloor = int.tryParse(floorCode.substring(2)) ?? -1;
+          } else {
+            parsedFloor = -1;
+          }
+
+          if (parsedFloor != floorLevel) return null;
+        }
+
+        return _GridPoint(
+          row: parsedRow.clamp(1, rows),
+          column: parsedCol.clamp(1, columns),
+        );
+      }
+    }
+
+    return null;
   }
 
   String _normalizeCode(String value) {
@@ -5699,11 +5956,7 @@ class _SupervisorTaskCard extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  Icon(
-                    data.type.icon,
-                    size: 16,
-                    color: Colors.white,
-                  ),
+                  Icon(data.type.icon, size: 16, color: Colors.white),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -5787,7 +6040,10 @@ class _SupervisorTaskCard extends StatelessWidget {
                                 onPressed: onDelete,
                                 style: OutlinedButton.styleFrom(
                                   padding: EdgeInsets.zero,
-                                  side: const BorderSide(color: Colors.red, width: 1.6),
+                                  side: const BorderSide(
+                                    color: Colors.red,
+                                    width: 1.6,
+                                  ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(10),
                                   ),
@@ -5805,7 +6061,9 @@ class _SupervisorTaskCard extends StatelessWidget {
                             child: SizedBox(
                               height: 34,
                               child: ElevatedButton(
-                                onPressed: showReviewButton ? onReview : onReassign,
+                                onPressed: showReviewButton
+                                    ? onReview
+                                    : onReassign,
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: typeColor,
                                   foregroundColor: Colors.white,
@@ -5867,11 +6125,7 @@ class _SupervisorTaskCard extends StatelessWidget {
                     color: Colors.white.withOpacity(0.25),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Icon(
-                    data.type.icon,
-                    size: 20,
-                    color: Colors.white,
-                  ),
+                  child: Icon(data.type.icon, size: 20, color: Colors.white),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -6116,7 +6370,6 @@ class _DonutChartPainter extends CustomPainter {
       );
       startAngle += pickingAngle;
     }
-
   }
 
   @override
@@ -6184,11 +6437,7 @@ class _HistoryCard extends StatelessWidget {
               color: color.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(
-              action.type.icon,
-              color: color,
-              size: 20,
-            ),
+            child: Icon(action.type.icon, color: color, size: 20),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -6285,7 +6534,13 @@ class _TaskCardData {
   final String? reportedByName;
 }
 
-enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison, employeeTask }
+enum _TaskSource {
+  bonCommande,
+  bonReplenishment,
+  bonPicking,
+  bonLivraison,
+  employeeTask,
+}
 
 enum TaskType { receipt, storage, picking, delivery }
 

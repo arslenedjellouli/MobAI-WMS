@@ -40,7 +40,6 @@ dependencies:
   dartz: ^0.10.1
   json_annotation: ^4.9.0
 
-
 dev_dependencies:
   flutter_test:
     sdk: flutter

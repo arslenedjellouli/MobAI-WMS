@@ -1,161 +1,47 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:isar/isar.dart';
+
 import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
-import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
+import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_item_collection.dart';
+import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/floor_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/section_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/slot_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/warehouse_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/zone_collection.dart';
 import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
-import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
-import 'package:isar/isar.dart';
+import 'package:mobile_ai/config/routes/app_routes.dart';
 
-class AdminDashboardPage extends StatefulWidget {
+class AdminDashboardPage extends StatelessWidget {
   const AdminDashboardPage({super.key});
 
   @override
-  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
-}
-
-class _AdminDashboardPageState extends State<AdminDashboardPage> {
-  final Isar _isar = sl<IsarDatabase>().isar;
-  final SyncService _syncService = sl<SyncService>();
-  final ConnectivityService _connectivityService = sl<ConnectivityService>();
-
-  bool _isSyncing = false;
-  bool _isOnline = false;
-  String _lastSync = 'Never';
-  StreamSubscription<NetworkStatus>? _networkSub;
-
-  @override
-  void initState() {
-    super.initState();
-    _isOnline = _connectivityService.isOnline;
-    _networkSub = _connectivityService.networkStatusStream.listen((status) {
-      if (!mounted) return;
-      setState(() {
-        _isOnline = status == NetworkStatus.online;
-      });
-    });
-
-    Future.microtask(_loadSyncMetadata);
-  }
-
-  @override
-  void dispose() {
-    _networkSub?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _triggerSync() async {
-    if (_isSyncing || !_isOnline) return;
-
-    setState(() {
-      _isSyncing = true;
-    });
-
-    try {
-      await _syncService.pushChanges();
-      await _syncService.pullChanges();
-      await _loadSyncMetadata();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sync completed.')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sync failed. Please retry.')),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSyncing = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _loadSyncMetadata() async {
-    final syncMeta = await _isar.syncMetadataCollections
-        .filter()
-        .entityTypeEqualTo('GLOBAL')
-        .findFirst();
-
-    if (!mounted) return;
-    setState(() {
-      _lastSync = _formatSyncDate(syncMeta?.lastPullAt ?? syncMeta?.lastPushAt);
-    });
-  }
-
-  String _formatSyncDate(DateTime? value) {
-    if (value == null) return 'Never';
-    final now = DateTime.now();
-    final delta = now.difference(value);
-    if (delta.inMinutes < 1) return 'now';
-    if (delta.inHours < 1) return '${delta.inMinutes}m ago';
-    if (delta.inDays < 1) return '${delta.inHours}h ago';
-    return '${delta.inDays}d ago';
-  }
-
-  Future<void> _handleLogout() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Logout',
-          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
-        ),
-        content: Text(
-          'Are you sure you want to logout?',
-          style: GoogleFonts.manrope(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text(
-              'Logout',
-              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    await sl<AuthRepository>().logout();
-    sl<NetworkService>().clearTokens();
-
-    if (mounted) {
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        AppRoutes.login,
-        (route) => false,
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
       );
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Mock user data
-    const String adminName = "Arslene"; // Or fetch from auth
-    const String adminRole = "Administrator";
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC), // Slate-50
@@ -166,7 +52,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // 1. Header Section
-              _buildHeader(context, adminName, adminRole),
+              _buildHeader(context, _adminName, "Administrator"),
               const SizedBox(height: 24),
 
               // 2. AI Performance Slider
@@ -357,13 +243,27 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         icon: Icons.rate_review_outlined,
         label: "Review AI Orders",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AdminReviewAiOrdersPage(),
+            ),
+          );
+        },
       ),
       _ActionItem(
         icon: Icons.remove_red_eye_outlined,
         label: "Monitor Warehouses",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AdminMonitorPage(),
+            ),
+          );
+        },
       ),
     ];
 
