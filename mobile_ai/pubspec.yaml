@@ -38,7 +38,10 @@ dependencies:
   logger: ^2.0.2+1
   google_fonts: ^6.2.1
   dartz: ^0.10.1
+<<<<<<< HEAD
   json_annotation: ^4.9.0
+=======
+>>>>>>> 657378a5225274edb83ce49cbe4cc4a2063c91eb
 
 dev_dependencies:
   flutter_test:

@@ -1486,29 +1486,26 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
         return [
           'Damaged product',
           'Wrong product',
-          'Extra items',
           'Missing items',
-          'Pallet unstable / dangerous',
+          'Extra items',
         ];
       case TaskType.delivery:
         return [
-          'Truck not ready',
           'Missing items',
-          'Damaged during transport',
-          'Inside warehouse',
+          'Damaged during transport inside warehouse',
         ];
       case TaskType.picking:
         return [
+          'Product not in slot',
           'Quantity insufficient',
           'Item damaged',
           'Cannot reach shelf',
-          'Product not in slot',
         ];
       case TaskType.storage:
         return [
+          'Slot already occupied',
           'Slot physically inaccessible',
           'Quantity already stored',
-          'Slot already occupied',
           'Chariot/cart problem',
           'Elevator not working',
           'Path blocked',

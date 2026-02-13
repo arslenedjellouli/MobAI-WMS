@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:isar/isar.dart';
 import 'package:logger/logger.dart';
@@ -169,13 +170,31 @@ class SyncService {
       _logger.d('Pull request: device_id=$deviceId, last_sync=$timestampStr');
 
       // 2. Request changes
-      final response = await _apiClient.get(
-        '/sync/pull/',
-        queryParameters: {
-          'device_id': deviceId,
-          'last_sync_timestamp': timestampStr,
-        },
-      );
+      Response response;
+      try {
+        response = await _apiClient.get(
+          '/sync/pull/',
+          queryParameters: {
+            'device_id': deviceId,
+            'last_sync_timestamp': timestampStr,
+          },
+        );
+      } on DioException catch (e) {
+        final isBadRequest = e.response?.statusCode == 400;
+        if (!isBadRequest) rethrow;
+
+        _logger.w(
+          'Pull returned 400 with last_sync_timestamp. Retrying once without timestamp. '
+          'Response: ${e.response?.data}',
+        );
+
+        response = await _apiClient.get(
+          '/sync/pull/',
+          queryParameters: {
+            'device_id': deviceId,
+          },
+        );
+      }
 
       if (response.statusCode == 200) {
         final data = response.data;
@@ -195,9 +214,8 @@ class SyncService {
       }
     } catch (e, stackTrace) {
       _logger.e('Pull failed', error: e, stackTrace: stackTrace);
-      // Check if it's a Dio error with response data
-      if (e.toString().contains('DioException') || e.toString().contains('DioError')) {
-        _logger.e('Backend error response: ${e.toString()}');
+      if (e is DioException) {
+        _logger.e('Backend error response body: ${e.response?.data}');
       }
       rethrow;
     }
