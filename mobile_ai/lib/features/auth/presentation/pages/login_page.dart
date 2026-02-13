@@ -12,12 +12,12 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _employerIdController = TextEditingController();
+  final _pinController = TextEditingController();
   bool _rememberMe = false;
-  bool _obscurePassword = true;
-  String? _emailError;
-  String? _passwordError;
+  bool _obscurePin = true;
+  String? _employerIdError;
+  String? _pinError;
   bool _isLoading = false;
   late final AuthRepository _authRepository;
 
@@ -29,18 +29,18 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
+    _employerIdController.dispose();
+    _pinController.dispose();
     super.dispose();
   }
 
   Future<void> _validateAndSubmit() async {
     setState(() {
-      _emailError = _emailController.text.isEmpty ? 'Email is required' : null;
-      _passwordError = _passwordController.text.isEmpty ? 'Password is required' : null;
+      _employerIdError = _employerIdController.text.isEmpty ? 'Employer ID is required' : null;
+      _pinError = _pinController.text.isEmpty ? 'PIN is required' : null;
     });
 
-    if (_emailError == null && _passwordError == null) {
+    if (_employerIdError == null && _pinError == null) {
       await _performLogin();
     }
   }
@@ -48,9 +48,12 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _performLogin() async {
     setState(() => _isLoading = true);
 
+    // Construct email from username (emp001 -> emp001@warehouse.local)
+    final email = '${_employerIdController.text.trim()}@warehouse.local';
+    
     final result = await _authRepository.login(
-      _emailController.text.trim(),
-      _passwordController.text,
+      email,
+      _pinController.text,
     );
 
     setState(() => _isLoading = false);
@@ -122,7 +125,7 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 48),
               Text(
-                'Email Address',
+                'Employer ID',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -131,15 +134,15 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _emailController,
-                hintText: 'Enter your email',
-                keyboardType: TextInputType.emailAddress,
-                errorText: _emailError,
-                onChanged: (_) => setState(() => _emailError = null),
+                controller: _employerIdController,
+                hintText: 'Enter your unique ID',
+                keyboardType: TextInputType.text,
+                errorText: _employerIdError,
+                onChanged: (_) => setState(() => _employerIdError = null),
               ),
-              if (_emailError != null) ...[const SizedBox(height: 4),
+              if (_employerIdError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _emailError!,
+                  _employerIdError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,
@@ -149,7 +152,7 @@ class _LoginPageState extends State<LoginPage> {
               ],
               const SizedBox(height: 20),
               Text(
-                'Password',
+                'PIN',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -158,23 +161,23 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _passwordController,
-                hintText: 'Enter your password',
-                keyboardType: TextInputType.text,
-                obscureText: _obscurePassword,
-                errorText: _passwordError,
-                onChanged: (_) => setState(() => _passwordError = null),
+                controller: _pinController,
+                hintText: 'Enter your PIN',
+                keyboardType: TextInputType.number,
+                obscureText: _obscurePin,
+                errorText: _pinError,
+                onChanged: (_) => setState(() => _pinError = null),
                 suffixIcon: IconButton(
-                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  onPressed: () => setState(() => _obscurePin = !_obscurePin),
                   icon: Icon(
-                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                    _obscurePin ? Icons.visibility_off : Icons.visibility,
                     color: const Color(0xFF94A3B8),
                   ),
                 ),
               ),
-              if (_passwordError != null) ...[const SizedBox(height: 4),
+              if (_pinError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _passwordError!,
+                  _pinError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,
