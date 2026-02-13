@@ -274,16 +274,20 @@ class SyncService {
 
     final bon = existing ?? BonPickingCollection.create(
       backendId: backendId,
-      warehouseId: json['warehouse_id'],
-      dailyOperationId: json['daily_operation_id'],
-      employeeId: 'UNKNOWN', // Should come from auth or JSON if available
-      createdAt: DateTime.now(), // Fallback
+      warehouseId: json['warehouse_id'] ?? '',
+      dailyOperationId: json['daily_operation_id'] as String?,
+      bonPreparationId: json['bon_preparation_id'] as String?,
+      employeeId: json['employee_id'] as String? ?? 'UNKNOWN',
+      createdAt: DateTime.now(),
     );
 
     // Update fields
     bon.status = _parseStatus(json['status']);
     bon.totalDistance = (json['total_distance'] as num?)?.toDouble();
     bon.notes = json['notes'];
+    if (json['completed_at'] != null) {
+      bon.completedAt = DateTime.tryParse(json['completed_at'] as String);
+    }
     bon.syncStatus = true;
     bon.remoteUpdateAt = DateTime.now();
     

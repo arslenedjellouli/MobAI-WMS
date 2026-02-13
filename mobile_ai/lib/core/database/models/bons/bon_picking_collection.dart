@@ -15,7 +15,7 @@ class BonPickingCollection {
 
   // Business fields
   late String warehouseId;
-  late String dailyOperationId;
+  String? dailyOperationId;
   
   /// Related preparation order
   String? bonPreparationId;
@@ -43,7 +43,7 @@ class BonPickingCollection {
   BonPickingCollection.create({
     this.backendId,
     required this.warehouseId,
-    required this.dailyOperationId,
+    this.dailyOperationId,
     this.bonPreparationId,
     required this.employeeId,
     this.status = BonPickingStatus.pending,

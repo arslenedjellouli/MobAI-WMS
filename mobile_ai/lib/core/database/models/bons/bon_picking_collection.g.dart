@@ -136,7 +136,12 @@ int _bonPickingCollectionEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
-  bytesCount += 3 + object.dailyOperationId.length * 3;
+  {
+    final value = object.dailyOperationId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.employeeId.length * 3;
   {
     final value = object.notes;
@@ -181,7 +186,7 @@ BonPickingCollection _bonPickingCollectionDeserialize(
   object.bonPreparationId = reader.readStringOrNull(offsets[1]);
   object.completedAt = reader.readDateTimeOrNull(offsets[2]);
   object.createdAt = reader.readDateTime(offsets[3]);
-  object.dailyOperationId = reader.readString(offsets[4]);
+  object.dailyOperationId = reader.readStringOrNull(offsets[4]);
   object.employeeId = reader.readString(offsets[5]);
   object.estimatedDuration = reader.readLongOrNull(offsets[6]);
   object.id = id;
@@ -213,7 +218,7 @@ P _bonPickingCollectionDeserializeProp<P>(
     case 3:
       return (reader.readDateTime(offset)) as P;
     case 4:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 5:
       return (reader.readString(offset)) as P;
     case 6:
@@ -859,8 +864,26 @@ extension BonPickingCollectionQueryFilter on QueryBuilder<BonPickingCollection,
   }
 
   QueryBuilder<BonPickingCollection, BonPickingCollection,
+      QAfterFilterCondition> dailyOperationIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'dailyOperationId',
+      ));
+    });
+  }
+
+  QueryBuilder<BonPickingCollection, BonPickingCollection,
+      QAfterFilterCondition> dailyOperationIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'dailyOperationId',
+      ));
+    });
+  }
+
+  QueryBuilder<BonPickingCollection, BonPickingCollection,
       QAfterFilterCondition> dailyOperationIdEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -874,7 +897,7 @@ extension BonPickingCollectionQueryFilter on QueryBuilder<BonPickingCollection,
 
   QueryBuilder<BonPickingCollection, BonPickingCollection,
       QAfterFilterCondition> dailyOperationIdGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -890,7 +913,7 @@ extension BonPickingCollectionQueryFilter on QueryBuilder<BonPickingCollection,
 
   QueryBuilder<BonPickingCollection, BonPickingCollection,
       QAfterFilterCondition> dailyOperationIdLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -906,8 +929,8 @@ extension BonPickingCollectionQueryFilter on QueryBuilder<BonPickingCollection,
 
   QueryBuilder<BonPickingCollection, BonPickingCollection,
       QAfterFilterCondition> dailyOperationIdBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -2414,7 +2437,7 @@ extension BonPickingCollectionQueryProperty on QueryBuilder<
     });
   }
 
-  QueryBuilder<BonPickingCollection, String, QQueryOperations>
+  QueryBuilder<BonPickingCollection, String?, QQueryOperations>
       dailyOperationIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'dailyOperationId');
