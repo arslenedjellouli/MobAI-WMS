@@ -198,7 +198,8 @@ const _SyncQueueCollectionoperationTypeEnumValueMap = {
   'pushAIDecision': 8,
   'pushAIOverride': 9,
   'validateAIDecision': 10,
-  'pullMasterData': 11,
+  'pushTaskReport': 11,
+  'pullMasterData': 12,
 };
 const _SyncQueueCollectionoperationTypeValueEnumMap = {
   0: SyncOperationType.pushBonCommande,
@@ -212,7 +213,8 @@ const _SyncQueueCollectionoperationTypeValueEnumMap = {
   8: SyncOperationType.pushAIDecision,
   9: SyncOperationType.pushAIOverride,
   10: SyncOperationType.validateAIDecision,
-  11: SyncOperationType.pullMasterData,
+  11: SyncOperationType.pushTaskReport,
+  12: SyncOperationType.pullMasterData,
 };
 const _SyncQueueCollectionstatusEnumValueMap = {
   'pending': 0,

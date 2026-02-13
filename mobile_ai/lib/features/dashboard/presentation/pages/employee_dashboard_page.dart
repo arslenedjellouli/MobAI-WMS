@@ -7,16 +7,20 @@ import 'package:isar/isar.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_queue_collection.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
+import 'dart:developer' as developer;
 
 class EmployeeDashboardPage extends StatefulWidget {
   const EmployeeDashboardPage({super.key});
@@ -29,6 +33,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   final Isar _isar = sl<IsarDatabase>().isar;
   final SyncService _syncService = sl<SyncService>();
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final ApiClient _apiClient = sl<ApiClient>();
   final Uuid _uuid = const Uuid();
 
   int _activeTabIndex = 0;
@@ -41,7 +46,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   bool _isOnline = false;
   String _lastSync = 'Never';
 
-  _TaskCardData? _currentTask;
+  final List<_TaskCardData> _currentTasks = [];
   final List<_TaskCardData> _remainingTasks = [];
   final List<_TaskCardData> _completedTasks = [];
 
@@ -80,6 +85,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     final user = await _isar.userCollections.where().findFirst();
     final currentUserBackendId = user?.backendId;
 
+    developer.log('👤 Current user: ${user?.fullName} (${user?.email})', name: 'EmployeeDashboard');
+    developer.log('🆔 User backend ID: $currentUserBackendId', name: 'EmployeeDashboard');
+
     final syncMeta = await _isar.syncMetadataCollections
         .filter()
         .entityTypeEqualTo('GLOBAL')
@@ -89,10 +97,31 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     final replenish = await _isar.bonReplenishmentCollections.where().findAll();
     final picking = await _isar.bonPickingCollections.where().findAll();
     final livraison = await _isar.bonLivraisonCollections.where().findAll();
+    
+    // Load employee tasks - filter by user if we have backendId
+    final List<EmployeeTaskCollection> employeeTasks;
+    if (currentUserBackendId != null && currentUserBackendId.isNotEmpty) {
+      employeeTasks = await _isar.employeeTaskCollections
+          .filter()
+          .assignedToUserIdEqualTo(currentUserBackendId)
+          .findAll();
+      developer.log('📋 Loaded ${employeeTasks.length} employee tasks for user $currentUserBackendId', name: 'EmployeeDashboard');
+    } else {
+      employeeTasks = await _isar.employeeTaskCollections.where().findAll();
+      developer.log('📋 Loaded ${employeeTasks.length} total employee tasks (no user filter)', name: 'EmployeeDashboard');
+    }
 
     final current = <_TaskCardData>[];
     final remaining = <_TaskCardData>[];
     final completed = <_TaskCardData>[];
+    
+    // Load all task reports to check if tasks have been reported
+    final allReports = await _isar.taskReportCollections.where().findAll();
+    
+    bool hasTaskReport(String? backendId) {
+      if (backendId == null) return false;
+      return allReports.any((report) => report.taskId == backendId);
+    }
 
     bool belongsToCurrentUser(String? employeeId) {
       if (currentUserBackendId == null || currentUserBackendId.isEmpty) {
@@ -103,7 +132,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in commandes) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromCommande(item);
+      final task = _taskFromCommande(item, hasTaskReport(item.backendId));
       if (item.status == BonCommandeStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonCommandeStatus.completed) {
@@ -115,7 +144,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in replenish) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromReplenishment(item);
+      final task = _taskFromReplenishment(item, hasTaskReport(item.backendId));
       if (item.status == BonReplenishmentStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonReplenishmentStatus.completed) {
@@ -127,7 +156,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in picking) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromPicking(item);
+      final task = _taskFromPicking(item, hasTaskReport(item.backendId));
       if (item.status == BonPickingStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonPickingStatus.completed) {
@@ -139,10 +168,28 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in livraison) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromLivraison(item);
+      final task = _taskFromLivraison(item, hasTaskReport(item.backendId));
       if (item.status == BonLivraisonStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonLivraisonStatus.done) {
+        completed.add(task);
+      } else {
+        remaining.add(task);
+      }
+    }
+
+    // Load EmployeeTask entities from sync
+    developer.log('📋 Employee tasks loaded from Isar: ${employeeTasks.length}', name: 'EmployeeDashboard');
+    for (final item in employeeTasks) {
+      developer.log('  - Task: ${item.title} (assigned to: ${item.assignedToUserId}, status: ${item.status})', name: 'EmployeeDashboard');
+      if (!belongsToCurrentUser(item.assignedToUserId)) {
+        developer.log('    ⚠️ Skipping - not assigned to current user', name: 'EmployeeDashboard');
+        continue;
+      }
+      final task = _taskFromEmployeeTask(item, hasTaskReport(item.backendId));
+      if (item.status == EmployeeTaskStatus.inProgress) {
+        current.add(task);
+      } else if (item.status == EmployeeTaskStatus.completed) {
         completed.add(task);
       } else {
         remaining.add(task);
@@ -153,6 +200,8 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     remaining.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     completed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
+    developer.log('📊 Dashboard summary: Current=${current.length}, Remaining=${remaining.length}, Completed=${completed.length}', name: 'EmployeeDashboard');
+
     if (!mounted) return;
     setState(() {
       _currentUserBackendId = currentUserBackendId;
@@ -160,11 +209,12 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       _employeeId = user?.backendId ?? (user?.id.toString() ?? '-');
       _lastSync = _formatSyncDate(syncMeta?.lastPullAt ?? syncMeta?.lastPushAt);
 
-      _currentTask = current.isNotEmpty ? current.first : null;
+      _currentTasks
+        ..clear()
+        ..addAll(current);
 
       _remainingTasks
         ..clear()
-        ..addAll(current.skip(1))
         ..addAll(remaining);
 
       _completedTasks
@@ -231,12 +281,14 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       TaskType.storage => 'ST',
       TaskType.picking => 'PK',
       TaskType.delivery => 'DL',
+      TaskType.preparation => 'PR',
+      TaskType.replenishment => 'RP',
     };
 
     return '$prefix${raw.length > 6 ? raw.substring(0, 6) : raw}';
   }
 
-  _TaskCardData _taskFromCommande(BonCommandeCollection item) {
+  _TaskCardData _taskFromCommande(BonCommandeCollection item, bool hasReport) {
     return _TaskCardData(
       source: _TaskSource.bonCommande,
       localId: item.id,
@@ -252,10 +304,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       zoneOrSlotLabel: 'Order',
       zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
       skuCount: item.totalQuantityExpected,
+      hasReport: hasReport,
     );
   }
 
-  _TaskCardData _taskFromReplenishment(BonReplenishmentCollection item) {
+  _TaskCardData _taskFromReplenishment(BonReplenishmentCollection item, bool hasReport) {
     return _TaskCardData(
       source: _TaskSource.bonReplenishment,
       localId: item.id,
@@ -271,10 +324,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       zoneOrSlotLabel: 'Order',
       zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
       skuCount: 0,
+      hasReport: hasReport,
     );
   }
 
-  _TaskCardData _taskFromPicking(BonPickingCollection item) {
+  _TaskCardData _taskFromPicking(BonPickingCollection item, bool hasReport) {
     return _TaskCardData(
       source: _TaskSource.bonPicking,
       localId: item.id,
@@ -290,10 +344,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       zoneOrSlotLabel: 'Order',
       zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
       skuCount: 0,
+      hasReport: hasReport,
     );
   }
 
-  _TaskCardData _taskFromLivraison(BonLivraisonCollection item) {
+  _TaskCardData _taskFromLivraison(BonLivraisonCollection item, bool hasReport) {
     return _TaskCardData(
       source: _TaskSource.bonLivraison,
       localId: item.id,
@@ -309,7 +364,46 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       zoneOrSlotLabel: 'Delivery',
       zoneOrSlotValue: item.deliveryId,
       skuCount: 0,
+      hasReport: hasReport,
     );
+  }
+
+  _TaskCardData _taskFromEmployeeTask(EmployeeTaskCollection item, bool hasReport) {
+    final taskType = _mapEmployeeTaskTypeToTaskType(item.taskType);
+    return _TaskCardData(
+      source: _TaskSource.employeeTask,
+      localId: item.id,
+      backendId: item.backendId,
+      createdAt: item.createdAt,
+      type: taskType,
+      code: _taskCode(
+        backendId: item.backendId,
+        localId: item.id,
+        type: taskType,
+      ),
+      floor: 'Warehouse ${item.warehouseId}',
+      zoneOrSlotLabel: 'Task',
+      zoneOrSlotValue: item.title,
+      skuCount: item.itemsCount,
+      hasReport: hasReport,
+    );
+  }
+
+  TaskType _mapEmployeeTaskTypeToTaskType(EmployeeTaskType type) {
+    switch (type) {
+      case EmployeeTaskType.receipt:
+        return TaskType.receipt;
+      case EmployeeTaskType.picking:
+        return TaskType.picking;
+      case EmployeeTaskType.preparation:
+        return TaskType.preparation;
+      case EmployeeTaskType.replenishment:
+        return TaskType.replenishment;
+      case EmployeeTaskType.delivery:
+        return TaskType.delivery;
+      case EmployeeTaskType.storage:
+        return TaskType.storage;
+    }
   }
 
   SyncOperationType _operationForTask(TaskType type) {
@@ -318,6 +412,8 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       TaskType.storage => SyncOperationType.pushBonReplenishment,
       TaskType.picking => SyncOperationType.pushBonPicking,
       TaskType.delivery => SyncOperationType.pushBonLivraison,
+      TaskType.preparation => SyncOperationType.pushBonPicking,
+      TaskType.replenishment => SyncOperationType.pushBonReplenishment,
     };
   }
 
@@ -349,6 +445,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   }
 
   Future<void> _markTaskInProgress(_TaskCardData task) async {
+    // Update local ISAR first
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
@@ -381,13 +478,42 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.inProgress;
+          entity.startedAt = DateTime.now();
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
-    await _enqueueTaskSync(task, action: 'IN_PROGRESS', priority: 8);
+    // Call API to update status on backend
+    try {
+      if (task.backendId != null) {
+        await _apiClient.patch(
+          '/v1/operations/tasks/${task.backendId}/',
+          data: {
+            'status': 'IN_PROGRESS',
+            'started_at': DateTime.now().toIso8601String(),
+          },
+        );
+        developer.log('✓ Task ${task.backendId} status updated to IN_PROGRESS via API', name: 'TaskUpdate');
+      }
+    } catch (e) {
+      developer.log('✗ API call failed, queuing for sync: $e', name: 'TaskUpdate');
+      // Fallback to sync queue if API fails
+      await _enqueueTaskSync(task, action: 'IN_PROGRESS', priority: 8);
+    }
+    
+    // Reload dashboard to reflect changes
+    await _loadDashboardData();
+    if (mounted) setState(() {});
   }
 
   Future<void> _markTaskCompleted(_TaskCardData task) async {
+    // Update local ISAR first
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
@@ -424,19 +550,116 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
           entity.completedAt = DateTime.now();
           entity.syncStatus = false;
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.completed;
+          entity.completedAt = DateTime.now();
+          entity.itemsCompleted = entity.itemsCount;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
-    await _enqueueTaskSync(task, action: 'COMPLETED', priority: 9);
+    // Call API to update status on backend
+    try {
+      if (task.backendId != null) {
+        await _apiClient.patch(
+          '/v1/operations/tasks/${task.backendId}/',
+          data: {
+            'status': 'COMPLETED',
+            'completed_at': DateTime.now().toIso8601String(),
+          },
+        );
+        developer.log('✓ Task ${task.backendId} status updated to COMPLETED via API', name: 'TaskUpdate');
+      }
+    } catch (e) {
+      developer.log('✗ API call failed, queuing for sync: $e', name: 'TaskUpdate');
+      // Fallback to sync queue if API fails
+      await _enqueueTaskSync(task, action: 'COMPLETED', priority: 9);
+    }
+    
+    // Reload dashboard to reflect changes
+    await _loadDashboardData();
+    if (mounted) setState(() {});
   }
 
-  Future<void> _queueTaskReport(_TaskCardData task, List<String> issues) async {
-    await _enqueueTaskSync(
-      task,
-      action: 'REPORT',
+  Future<bool> _submitTaskReport(_TaskCardData task, List<String> issues) async {
+    try {
+      // Get current user info
+      final user = await _isar.userCollections.where().findFirst();
+      final userName = user?.fullName ?? 'employee';
+      
+      final payload = {
+        'task_id': task.backendId ?? task.localId.toString(),
+        'issues': issues,
+        'description': 'Issues reported by $userName: ${issues.join(", ")}',
+      };
+
+      // Call backend API to create report
+      developer.log('Submitting report for task ${task.backendId}', name: 'TaskReport');
+      final response = await _apiClient.post(
+        '/v1/operations/task-reports/submit/',
+        data: payload,
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        developer.log('Report submitted successfully', name: 'TaskReport');
+        
+        // Store report in ISAR
+        final reportData = response.data;
+        final report = TaskReportCollection.fromJson(reportData);
+        
+        await _isar.writeTxn(() async {
+          await _isar.taskReportCollections.put(report);
+        });
+        
+        developer.log('Report stored in ISAR: ${report.backendId}', name: 'TaskReport');
+        
+        // Reload dashboard to show updated tasks
+        await _loadDashboardData();
+        if (mounted) setState(() {});
+        
+        return true;
+      } else {
+        developer.log('Report submission failed: ${response.statusCode}', name: 'TaskReport');
+        return false;
+      }
+    } catch (e) {
+      developer.log('Error submitting report: $e', name: 'TaskReport');
+      // Fallback: Queue for sync if API call fails (offline mode)
+      await _queueTaskReportForSync(task, issues);
+      return true; // Still return true since it's queued
+    }
+  }
+
+  Future<void> _queueTaskReportForSync(_TaskCardData task, List<String> issues) async {
+    // Fallback method for offline mode
+    final user = await _isar.userCollections.where().findFirst();
+    
+    final payload = {
+      'task_id': task.backendId ?? task.localId.toString(),
+      'issues': issues,
+      'reported_by_id': user?.backendId ?? user?.id.toString(),
+      'reported_by_name': user?.fullName ?? 'Unknown',
+      'reported_by_email': user?.email,
+      'reported_at': DateTime.now().toIso8601String(),
+      'description': 'Issues reported by ${user?.fullName ?? 'employee'}',
+    };
+
+    final queueItem = SyncQueueCollection.create(
+      queueId: _uuid.v4(),
+      operationType: SyncOperationType.pushTaskReport,
+      dataJson: jsonEncode(payload),
+      createdAt: DateTime.now(),
       priority: 10,
-      extra: {'issues': issues},
     );
+
+    await _isar.writeTxn(() async {
+      await _isar.syncQueueCollections.put(queueItem);
+    });
+    developer.log('Report queued for sync (offline mode)', name: 'TaskReport');
   }
 
   @override
@@ -570,11 +793,8 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   }
 
   List<_ShiftStat> _buildShiftStats() {
-    final currentCount = _currentTask == null ? 0 : 1;
-    final totalTasks =
-        _remainingTasks.length + _completedTasks.length + currentCount;
     return [
-      _ShiftStat(label: 'Tasks', value: totalTasks),
+      _ShiftStat(label: 'Tasks', value: _currentTasks.length),
       _ShiftStat(label: 'Completed', value: _completedTasks.length),
       _ShiftStat(label: 'Remaining', value: _remainingTasks.length),
     ];
@@ -644,13 +864,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   }
 
   Widget _buildCurrentTask(TextTheme textTheme) {
-    final currentTask = _currentTask;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Current Task',
+          'Active Tasks',
           style: GoogleFonts.manrope(
             textStyle: textTheme.titleMedium,
             fontWeight: FontWeight.w700,
@@ -658,19 +876,24 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
           ),
         ),
         const SizedBox(height: 12),
-        if (currentTask == null)
+        if (_currentTasks.isEmpty)
           _buildEmptyState(
             textTheme,
-            'No task in progress. Start a task from Remaining.',
+            'No tasks in progress. Start a task from Remaining.',
           )
         else
-          _TaskCard(
-            data: currentTask,
-            showDualActions: true,
-            onValidate: () {
-              _completeCurrentTask();
-            },
-            onReport: () => _showReportSheet(currentTask),
+          ..._currentTasks.map(
+            (task) => Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: _TaskCard(
+                data: task,
+                showDualActions: true,
+                onValidate: () {
+                  _completeTask(task);
+                },
+                onReport: () => _showReportSheet(task),
+              ),
+            ),
           ),
       ],
     );
@@ -728,7 +951,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
             ..._completedTasks.map(
               (task) => Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: _TaskCard(data: task, showCompleted: true),
+                child: _TaskCard(
+                  data: task, 
+                  showCompleted: true,
+                  onReport: task.hasReport ? null : () => _showReportSheet(task),
+                ),
               ),
             ),
         ],
@@ -768,10 +995,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     setState(() {
       _remainingTasks.remove(task);
-      if (_currentTask != null) {
-        _remainingTasks.insert(0, _currentTask!);
-      }
-      _currentTask = task;
+      _currentTasks.add(task);
     });
 
     if (shouldShowSheet) {
@@ -781,17 +1005,12 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     await _triggerSync(showLoader: false);
   }
 
-  Future<void> _completeCurrentTask() async {
-    if (_currentTask == null) {
-      return;
-    }
-
-    final taskToComplete = _currentTask!;
-    await _markTaskCompleted(taskToComplete);
+  Future<void> _completeTask(_TaskCardData task) async {
+    await _markTaskCompleted(task);
 
     setState(() {
-      _completedTasks.insert(0, taskToComplete);
-      _currentTask = null;
+      _currentTasks.remove(task);
+      _completedTasks.insert(0, task);
     });
 
     await _triggerSync(showLoader: false);
@@ -880,7 +1099,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                           child: ElevatedButton.icon(
                             onPressed: () {
                               Navigator.of(context).pop();
-                              _completeCurrentTask();
+                              _completeTask(task);
                             },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF3C91CC),
@@ -1043,24 +1262,97 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton.icon(
-                            onPressed: selected.isEmpty
-                                ? null
-                                : () async {
-                                    await _queueTaskReport(
-                                      task,
-                                      selected.toList(),
-                                    );
-                                    if (!mounted) return;
-                                    Navigator.of(context).pop();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text(
-                                          'Report queued for sync.',
+                            onPressed: () async {
+                              if (selected.isEmpty) {
+                                await showDialog(
+                                  context: context,
+                                  builder: (BuildContext context) {
+                                    return AlertDialog(
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      title: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.error_outline,
+                                            color: Color(0xFFDC2626),
+                                            size: 28,
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Text(
+                                            'No Issue Selected',
+                                            style: GoogleFonts.manrope(
+                                              fontWeight: FontWeight.w700,
+                                              color: const Color(0xFF0F172A),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      content: Text(
+                                        'Please select at least one issue before submitting the report.',
+                                        style: GoogleFonts.manrope(
+                                          color: const Color(0xFF64748B),
                                         ),
                                       ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.of(context).pop(),
+                                          style: TextButton.styleFrom(
+                                            backgroundColor: const Color(0xFFDC2626),
+                                            foregroundColor: Colors.white,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 24,
+                                              vertical: 12,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                          ),
+                                          child: Text(
+                                            'OK',
+                                            style: GoogleFonts.manrope(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     );
-                                    await _triggerSync(showLoader: false);
                                   },
+                                );
+                                return;
+                              }
+                              
+                              // Show loading
+                              showDialog(
+                                context: context,
+                                barrierDismissible: false,
+                                builder: (context) => const Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                              );
+                              
+                              final success = await _submitTaskReport(
+                                task,
+                                selected.toList(),
+                              );
+                              
+                              if (!mounted) return;
+                              Navigator.of(context).pop(); // Close loading
+                              Navigator.of(context).pop(); // Close dialog
+                              
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    success
+                                        ? 'Report submitted successfully!'
+                                        : 'Report queued for sync (offline mode)',
+                                  ),
+                                  backgroundColor: success
+                                      ? const Color(0xFF10B981)
+                                      : const Color(0xFFF59E0B),
+                                ),
+                              );
+                            },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFFDC2626),
                               foregroundColor: Colors.white,
@@ -1155,6 +1447,22 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
           'Chariot/cart problem',
           'Elevator not working',
           'Path blocked',
+        ];
+      case TaskType.preparation:
+        return [
+          'Missing items',
+          'Damaged product',
+          'Packaging material unavailable',
+          'Wrong quantity',
+          'Label printer issue',
+        ];
+      case TaskType.replenishment:
+        return [
+          'Stock not available',
+          'Shelf full',
+          'Wrong location',
+          'Access blocked',
+          'Item mismatch',
         ];
     }
   }
@@ -1427,6 +1735,7 @@ class _TaskCardData {
     required this.zoneOrSlotValue,
     required this.skuCount,
     this.backendId,
+    this.hasReport = false,
   });
 
   final _TaskSource source;
@@ -1440,11 +1749,12 @@ class _TaskCardData {
   final String zoneOrSlotLabel;
   final String zoneOrSlotValue;
   final int skuCount;
+  final bool hasReport; // Whether task has a submitted report
 }
 
-enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison }
+enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison, employeeTask }
 
-enum TaskType { receipt, storage, picking, delivery }
+enum TaskType { receipt, storage, picking, delivery, preparation, replenishment }
 
 extension TaskTypeUI on TaskType {
   String get label {
@@ -1457,6 +1767,10 @@ extension TaskTypeUI on TaskType {
         return 'Picking';
       case TaskType.delivery:
         return 'Delivery';
+      case TaskType.preparation:
+        return 'Preparation';
+      case TaskType.replenishment:
+        return 'Replenishment';
     }
   }
 
@@ -1470,6 +1784,10 @@ extension TaskTypeUI on TaskType {
         return const Color(0xFFFE8C21);
       case TaskType.delivery:
         return const Color(0xFF71B643);
+      case TaskType.preparation:
+        return const Color(0xFF8B5CF6);
+      case TaskType.replenishment:
+        return const Color(0xFF06B6D4);
     }
   }
 
@@ -1483,6 +1801,10 @@ extension TaskTypeUI on TaskType {
         return Icons.checklist;
       case TaskType.delivery:
         return Icons.local_shipping;
+      case TaskType.preparation:
+        return Icons.inventory;
+      case TaskType.replenishment:
+        return Icons.refresh;
     }
   }
 }

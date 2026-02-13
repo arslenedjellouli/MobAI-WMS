@@ -28,6 +28,8 @@ import 'models/inventory/picking_stock_status_collection.dart';
 import 'models/operations/daily_operation_collection.dart';
 import 'models/operations/chariot_collection.dart';
 import 'models/operations/chariot_assignment_collection.dart';
+import 'models/operations/employee_task_collection.dart';
+import 'models/operations/task_report_collection.dart';
 
 // BON collections
 import 'models/bons/bon_commande_collection.dart';
@@ -89,10 +91,12 @@ class IsarDatabase {
         StockLedgerCollectionSchema,
         PickingStockStatusCollectionSchema,
 
-        // Operations (3)
+        // Operations (4)
         DailyOperationCollectionSchema,
         ChariotCollectionSchema,
         ChariotAssignmentCollectionSchema,
+        EmployeeTaskCollectionSchema,
+        TaskReportCollectionSchema,
 
         // BONs (10)
         BonCommandeCollectionSchema,
@@ -165,6 +169,8 @@ class IsarDatabase {
       'bonReplenishments': await db.bonReplenishmentCollections.count(),
       'bonPickings': await db.bonPickingCollections.count(),
       'bonLivraisons': await db.bonLivraisonCollections.count(),
+      'employeeTasks': await db.employeeTaskCollections.count(),
+      'taskReports': await db.taskReportCollections.count(),
       'aiDecisions': await db.aIDecisionCollections.count(),
     };
   }

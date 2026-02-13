@@ -78,6 +78,9 @@ enum SyncOperationType {
   pushAIOverride,
   validateAIDecision,
   
+  // Task operations
+  pushTaskReport,
+  
   // Master data pull
   pullMasterData,
 }
