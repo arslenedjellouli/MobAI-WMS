@@ -142,7 +142,9 @@ class AdminDashboardPage extends StatelessWidget {
         icon: Icons.local_offer_outlined, // Tag icon
         label: "Manage Products",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.pushNamed(context, AppRoutes.productManagement);
+        },
       ),
       _ActionItem(
         icon: Icons.shopping_basket_outlined,

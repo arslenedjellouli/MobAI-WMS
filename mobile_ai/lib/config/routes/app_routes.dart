@@ -11,6 +11,11 @@ import 'package:mobile_ai/features/users/presentation/pages/user_management_page
 import 'package:mobile_ai/features/users/presentation/pages/add_user_page.dart';
 import 'package:mobile_ai/features/users/presentation/pages/edit_user_page.dart';
 
+import 'package:mobile_ai/features/inventory/presentation/pages/product_management_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/add_product_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/edit_product_page.dart';
+
+
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
 // import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
@@ -31,6 +36,11 @@ class AppRoutes {
   static const String userManagement = '/users';
   static const String addUser = '/users/add';
   static const String editUser = '/users/edit';
+
+  // Product Management Routes
+  static const String productManagement = '/products';
+  static const String addProduct = '/products/add';
+  static const String editProduct = '/products/edit';
 
   // Daily Operation Routes
   static const String dailyOperation = '/daily-operation';
@@ -136,6 +146,22 @@ class AppRoutes {
           builder: (_) => EditUserPage(user: user),
         );
 
+      case productManagement:
+        return MaterialPageRoute(
+          builder: (_) => const ProductManagementPage(),
+        );
+
+      case addProduct:
+        return MaterialPageRoute(
+          builder: (_) => const AddProductPage(),
+        );
+
+      case editProduct:
+        final product = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditProductPage(product: product),
+        );
+
       case bonPickings:
         return MaterialPageRoute(
           builder: (_) => _placeholder('Bon Pickings', 'List of picking orders'),
@@ -173,5 +199,6 @@ class AppRoutes {
     );
   }
 }
+
 
 
