@@ -95,9 +95,14 @@ class _LoginPageState extends State<LoginPage> {
         // Delay navigation to show success message
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {
-            print('🔄 [LoginPage] Navigating to dashboard...');
+            // Route based on user role
+            final targetRoute = user.isSupervisor 
+                ? AppRoutes.supervisorDashboard 
+                : AppRoutes.dashboard;
+                
+            print('🔄 [LoginPage] Navigating to ${user.isSupervisor ? "supervisor" : "employee"} dashboard...');
             Navigator.of(context).pushNamedAndRemoveUntil(
-              AppRoutes.dashboard,
+              targetRoute,
               (route) => false,
             );
           }

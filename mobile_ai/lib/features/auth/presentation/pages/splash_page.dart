@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:get_it/get_it.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
 
 class SplashPage extends StatefulWidget {
@@ -27,6 +29,20 @@ class _SplashPageState extends State<SplashPage> {
     
     print('🔍 [SplashPage] Checking for existing user session...');
     
+    // Check if this is a session-only login (Remember Me was not checked)
+    final storage = const FlutterSecureStorage();
+    final sessionOnly = await storage.read(key: 'session_only');
+    
+    if (sessionOnly == 'true') {
+      // Session-only login shouldn't persist after app restart
+      print('🔒 [SplashPage] Session-only login detected, clearing tokens...');
+      await storage.delete(key: 'auth_token');
+      await storage.delete(key: 'refresh_token');
+      await storage.delete(key: 'session_only');
+      _navigateToLogin();
+      return;
+    }
+    
     final result = await authRepository.getCurrentUser();
     
     result.fold(
@@ -37,7 +53,7 @@ class _SplashPageState extends State<SplashPage> {
       (user) {
         if (user != null && user.accessToken != null) {
           print('✅ [SplashPage] Valid session found for: ${user.email}');
-          _navigateToDashboard();
+          _navigateToDashboard(user);
         } else {
           print('⚠️ [SplashPage] No user or token found');
           _navigateToLogin();
@@ -50,8 +66,12 @@ class _SplashPageState extends State<SplashPage> {
     Navigator.of(context).pushReplacementNamed(AppRoutes.login);
   }
 
-  void _navigateToDashboard() {
-    Navigator.of(context).pushReplacementNamed(AppRoutes.dashboard);
+
+  void _navigateToDashboard(UserCollection user) {
+    final route = user.isSupervisor
+        ? AppRoutes.supervisorDashboard
+        : AppRoutes.dashboard;
+    Navigator.of(context).pushReplacementNamed(route);
   }
 
   @override
