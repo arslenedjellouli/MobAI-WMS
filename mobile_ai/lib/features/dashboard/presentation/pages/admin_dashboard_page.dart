@@ -1,9 +1,155 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/core/database/isar_database.dart';
+import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
+import 'package:mobile_ai/core/network/network_service.dart';
+import 'package:mobile_ai/core/services/connectivity_service.dart';
+import 'package:mobile_ai/core/services/sync_service.dart';
+import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
+import 'package:isar/isar.dart';
 
-class AdminDashboardPage extends StatelessWidget {
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
+
+  @override
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+  final Isar _isar = sl<IsarDatabase>().isar;
+  final SyncService _syncService = sl<SyncService>();
+  final ConnectivityService _connectivityService = sl<ConnectivityService>();
+
+  bool _isSyncing = false;
+  bool _isOnline = false;
+  String _lastSync = 'Never';
+  StreamSubscription<NetworkStatus>? _networkSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _isOnline = _connectivityService.isOnline;
+    _networkSub = _connectivityService.networkStatusStream.listen((status) {
+      if (!mounted) return;
+      setState(() {
+        _isOnline = status == NetworkStatus.online;
+      });
+    });
+
+    Future.microtask(_loadSyncMetadata);
+  }
+
+  @override
+  void dispose() {
+    _networkSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _triggerSync() async {
+    if (_isSyncing || !_isOnline) return;
+
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      await _syncService.pushChanges();
+      await _syncService.pullChanges();
+      await _loadSyncMetadata();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync completed.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync failed. Please retry.')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadSyncMetadata() async {
+    final syncMeta = await _isar.syncMetadataCollections
+        .filter()
+        .entityTypeEqualTo('GLOBAL')
+        .findFirst();
+
+    if (!mounted) return;
+    setState(() {
+      _lastSync = _formatSyncDate(syncMeta?.lastPullAt ?? syncMeta?.lastPushAt);
+    });
+  }
+
+  String _formatSyncDate(DateTime? value) {
+    if (value == null) return 'Never';
+    final now = DateTime.now();
+    final delta = now.difference(value);
+    if (delta.inMinutes < 1) return 'now';
+    if (delta.inHours < 1) return '${delta.inMinutes}m ago';
+    if (delta.inDays < 1) return '${delta.inHours}h ago';
+    return '${delta.inDays}d ago';
+  }
+
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Logout',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Are you sure you want to logout?',
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Logout',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    await sl<AuthRepository>().logout();
+    sl<NetworkService>().clearTokens();
+
+    if (mounted) {
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        AppRoutes.login,
+        (route) => false,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -108,12 +254,63 @@ class AdminDashboardPage extends StatelessWidget {
           ],
         ),
         const Spacer(),
-        IconButton(
-          onPressed: () {
-            // TODO: Implement notifications
-          },
-          icon: const Icon(Icons.notifications_outlined),
-          color: const Color(0xFF64748B),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync, size: 20),
+                  color: const Color(0xFF64748B),
+                  tooltip: 'Sync',
+                ),
+                IconButton(
+                  onPressed: _handleLogout,
+                  icon: const Icon(Icons.logout, size: 20, color: Colors.red),
+                  tooltip: 'Logout',
+                ),
+              ],
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _isOnline ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _isOnline ? 'Online' : 'Offline',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Last sync: $_lastSync',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF94A3B8),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ],
     );
