@@ -1,12 +1,10 @@
 import 'package:dartz/dartz.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:get_it/get_it.dart';
 import 'package:isar/isar.dart';
 
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/errors/failures.dart';
-import 'package:mobile_ai/core/services/periodic_sync_service.dart';
 import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
 
 abstract class AuthRepository {
@@ -29,19 +27,36 @@ class AuthRepositoryImpl implements AuthRepository {
   @override
   Future<Either<Failure, UserCollection>> login(String email, String password) async {
     try {
+      print('🔐 [AuthRepository] Starting login for: $email');
+      
       // 1. Call API
       final result = await remoteDataSource.login(email, password);
-      final token = result['access'] as String?; // Adjust based on JWT response
+      print('📡 [AuthRepository] API Response received: ${result.keys}');
+      
+      final token = result['access'] as String?;
+      final refreshToken = result['refresh'] as String?;
       final userData = result['user'] as Map<String, dynamic>?;
 
+      print('🔑 [AuthRepository] Token received: ${token?.substring(0, 20)}...');
+      print('👤 [AuthRepository] User data: ${userData?['email']}');
+
       if (token == null || userData == null) {
+        print('❌ [AuthRepository] Missing token or user data in response');
         return Left(ServerFailure('Invalid response from server'));
       }
 
-      // 2. Save Token
-      await storage.write(key: 'auth_token', value: token);
+      // 2. Save Access Token to SecureStorage
+      try {
+        await storage.write(key: 'auth_token', value: token);
+        if (refreshToken != null) {
+          await storage.write(key: 'refresh_token', value: refreshToken);
+        }
+        print('✅ [AuthRepository] Tokens saved to SecureStorage');
+      } catch (e) {
+        print('⚠️ [AuthRepository] Failed to save tokens to SecureStorage: $e');
+      }
 
-      // 3. Save User to Isar
+      // 3. Create and Save User to Isar
       final fullName = (userData['full_name'] as String?)?.trim().isNotEmpty == true
           ? userData['full_name'] as String
           : [userData['first_name'], userData['last_name']]
@@ -57,25 +72,60 @@ class AuthRepositoryImpl implements AuthRepository {
         role: _parseRole(userData['role'] as String?),
         status:
             (userData['is_active'] ?? true) ? UserStatus.active : UserStatus.disabled,
+        accessToken: token,
+        refreshToken: refreshToken,
         createdAt: DateTime.now(),
       );
 
-      final isar = db.isar;
-      await isar.writeTxn(() async {
-        // Clear old users to ensure single user session if needed
-        await isar.userCollections.clear(); 
-        await isar.userCollections.put(user);
-      });
+      print('👥 [AuthRepository] Created UserCollection object: ${user.fullName} (${user.email})');
+      print('   - ID: ${user.id}');
+      print('   - Role: ${user.role}');
+      print('   - Status: ${user.status}');
 
-      // Start background sync service after successful login
+      // Ensure Isar is initialized
       try {
-        GetIt.I<PeriodicSyncService>().start();
-      } catch (e) {
-        // Ignore if sync service not initialized
+        final isar = db.isar;
+        print('📦 [AuthRepository] Isar database is initialized');
+        
+        // Save user to Isar
+        await isar.writeTxn(() async {
+          print('📝 [AuthRepository] Starting transaction - clearing old user data...');
+          final oldCount = await isar.userCollections.count();
+          print('   Old users in database: $oldCount');
+          
+          await isar.userCollections.clear(); 
+          print('✅ [AuthRepository] Old user data cleared');
+          
+          print('💾 [AuthRepository] Saving new user to Isar...');
+          await isar.userCollections.put(user);
+          print('✅ [AuthRepository] User saved to Isar (put operation completed)');
+        });
+
+        // Verify user was saved
+        final users = await isar.userCollections.buildQuery().findAll();
+        print('🔍 [AuthRepository] Verification - Total users in Isar: ${users.length}');
+        
+        if (users.isNotEmpty) {
+          final savedUser = users.first;
+          print('🔍 [AuthRepository] First user in database:');
+          print('   - Full Name: ${savedUser.fullName}');
+          print('   - Email: ${savedUser.email}');
+          print('   - Backend ID: ${savedUser.backendId}');
+        } else {
+          print('⚠️ [AuthRepository] No users found in Isar after save!');
+        }
+
+      } catch (e, st) {
+        print('❌ [AuthRepository] Isar database error: $e');
+        print('📋 Stack trace: $st');
+        return Left(ServerFailure('Failed to save user data: $e'));
       }
 
+      print('✨ [AuthRepository] Login completed successfully');
       return Right(user);
-    } catch (e) {
+    } catch (e, st) {
+      print('❌ [AuthRepository] Login error: $e');
+      print('📋 Stack trace: $st');
       return Left(ServerFailure(e.toString()));
     }
   }
@@ -83,12 +133,12 @@ class AuthRepositoryImpl implements AuthRepository {
   @override
   Future<Either<Failure, void>> logout() async {
     try {
-      // Stop background sync service
-      try {
-        GetIt.I<PeriodicSyncService>().stop();
-      } catch (e) {
-        // Ignore if sync service not initialized
-      }
+      // Stop background sync service (if it was started)
+      // try {
+      //   GetIt.I<PeriodicSyncService>().stop();
+      // } catch (e) {
+      //   // Ignore if sync service not initialized
+      // }
 
       await storage.delete(key: 'auth_token');
       final isar = db.isar;
@@ -105,7 +155,8 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<Either<Failure, UserCollection?>> getCurrentUser() async {
     try {
       final isar = db.isar;
-      final user = await isar.userCollections.where().findFirst();
+      final users = await isar.userCollections.buildQuery().findAll();
+      final user = users.isNotEmpty ? users.first : null;
       return Right(user);
     } catch (e) {
       return Left(CacheFailure(e.toString()));

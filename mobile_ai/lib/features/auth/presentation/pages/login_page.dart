@@ -12,12 +12,12 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _employerIdController = TextEditingController();
-  final _pinController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _rememberMe = false;
-  bool _obscurePin = true;
-  String? _employerIdError;
-  String? _pinError;
+  bool _obscurePassword = true;
+  String? _emailError;
+  String? _passwordError;
   bool _isLoading = false;
   late final AuthRepository _authRepository;
 
@@ -29,37 +29,48 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
-    _employerIdController.dispose();
-    _pinController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
   Future<void> _validateAndSubmit() async {
     setState(() {
-      _employerIdError = _employerIdController.text.isEmpty ? 'Employer ID is required' : null;
-      _pinError = _pinController.text.isEmpty ? 'PIN is required' : null;
+      _emailError = _emailController.text.isEmpty ? 'Email is required' : 
+                    !_isValidEmail(_emailController.text) ? 'Invalid email format' : null;
+      _passwordError = _passwordController.text.isEmpty ? 'Password is required' : null;
     });
 
-    if (_employerIdError == null && _pinError == null) {
+    if (_emailError == null && _passwordError == null) {
       await _performLogin();
     }
+  }
+
+  bool _isValidEmail(String email) {
+    final emailRegex = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
+    return emailRegex.hasMatch(email);
   }
 
   Future<void> _performLogin() async {
     setState(() => _isLoading = true);
 
-    // Construct email from username (emp001 -> emp001@warehouse.local)
-    final email = '${_employerIdController.text.trim()}@warehouse.local';
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    
+    print('🚀 [LoginPage] Attempting login with email: $email');
     
     final result = await _authRepository.login(
       email,
-      _pinController.text,
+      password,
     );
 
     setState(() => _isLoading = false);
 
+    print('📊 [LoginPage] Login result received');
+
     result.fold(
       (failure) {
+        print('❌ [LoginPage] Login failed: ${failure.message}');
         // Show error message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -70,6 +81,7 @@ class _LoginPageState extends State<LoginPage> {
         );
       },
       (user) {
+        print('✅ [LoginPage] Login successful: ${user.fullName}');
         // Navigate to dashboard on success
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -81,6 +93,7 @@ class _LoginPageState extends State<LoginPage> {
         // Delay navigation to show success message
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {
+            print('🔄 [LoginPage] Navigating to dashboard...');
             Navigator.of(context).pushNamedAndRemoveUntil(
               AppRoutes.dashboard,
               (route) => false,
@@ -125,7 +138,7 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 48),
               Text(
-                'Employer ID',
+                'Email Address',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -134,15 +147,15 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _employerIdController,
-                hintText: 'Enter your unique ID',
-                keyboardType: TextInputType.text,
-                errorText: _employerIdError,
-                onChanged: (_) => setState(() => _employerIdError = null),
+                controller: _emailController,
+                hintText: 'Enter your email address',
+                keyboardType: TextInputType.emailAddress,
+                errorText: _emailError,
+                onChanged: (_) => setState(() => _emailError = null),
               ),
-              if (_employerIdError != null) ...[const SizedBox(height: 4),
+              if (_emailError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _employerIdError!,
+                  _emailError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,
@@ -152,7 +165,7 @@ class _LoginPageState extends State<LoginPage> {
               ],
               const SizedBox(height: 20),
               Text(
-                'PIN',
+                'Password',
                 style: GoogleFonts.manrope(
                   textStyle: textTheme.bodyMedium,
                   fontWeight: FontWeight.w700,
@@ -161,23 +174,23 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 8),
               _InputField(
-                controller: _pinController,
-                hintText: 'Enter your PIN',
-                keyboardType: TextInputType.number,
-                obscureText: _obscurePin,
-                errorText: _pinError,
-                onChanged: (_) => setState(() => _pinError = null),
+                controller: _passwordController,
+                hintText: 'Enter your password',
+                keyboardType: TextInputType.text,
+                obscureText: _obscurePassword,
+                errorText: _passwordError,
+                onChanged: (_) => setState(() => _passwordError = null),
                 suffixIcon: IconButton(
-                  onPressed: () => setState(() => _obscurePin = !_obscurePin),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                   icon: Icon(
-                    _obscurePin ? Icons.visibility_off : Icons.visibility,
+                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
                     color: const Color(0xFF94A3B8),
                   ),
                 ),
               ),
-              if (_pinError != null) ...[const SizedBox(height: 4),
+              if (_passwordError != null) ...[const SizedBox(height: 4),
                 Text(
-                  _pinError!,
+                  _passwordError!,
                   style: GoogleFonts.manrope(
                     textStyle: textTheme.bodySmall,
                     fontWeight: FontWeight.w500,

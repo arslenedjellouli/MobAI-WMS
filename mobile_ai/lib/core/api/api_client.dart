@@ -8,9 +8,11 @@ class ApiClient {
   final Logger _logger;
 
   // Base URL for the backend API
-  // Android Emulator uses 10.0.2.2 to access host localhost
-  // iOS Simulator uses localhost
-  static const String _baseUrl = 'http://10.0.2.2:8000/api'; 
+  // Windows Desktop: http://localhost:8000/api
+  // Android Emulator: http://10.0.2.2:8000/api
+  // iOS Simulator: http://localhost:8000/api
+  // Change based on your platform!
+  static const String _baseUrl = 'http://localhost:8000/api'; 
   
   ApiClient({
     Dio? dio,
@@ -24,12 +26,16 @@ class ApiClient {
 
   void _initDio() {
     _dio.options.baseUrl = _baseUrl;
-    _dio.options.connectTimeout = const Duration(seconds: 60);
-    _dio.options.receiveTimeout = const Duration(seconds: 60);
+    // Increased timeouts to handle slower networks
+    _dio.options.connectTimeout = const Duration(seconds: 90);
+    _dio.options.receiveTimeout = const Duration(seconds: 90);
+    _dio.options.sendTimeout = const Duration(seconds: 90);
     _dio.options.headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
+    
+    _logger.i('🔧 ApiClient initialized with base URL: $_baseUrl');
 
     // Add interceptors
     _dio.interceptors.add(
@@ -41,19 +47,27 @@ class ApiClient {
             options.headers['Authorization'] = 'Bearer $token';
           }
           
-          _logger.d('Request: ${options.method} ${options.path}');
+          _logger.d('📤 Request: ${options.method} ${options.path}');
           return handler.next(options);
         },
         onResponse: (response, handler) {
-          _logger.d('Response: ${response.statusCode} ${response.statusMessage}');
+          _logger.d('✅ Response: ${response.statusCode} ${response.statusMessage}');
           return handler.next(response);
         },
         onError: (DioException e, handler) async {
-          _logger.e('Error: ${e.message}', error: e, stackTrace: e.stackTrace);
+          if (e.type == DioExceptionType.connectionTimeout) {
+            _logger.e('⏱️ Connection Timeout: Backend not responding');
+          } else if (e.type == DioExceptionType.receiveTimeout) {
+            _logger.e('⏱️ Receive Timeout: Backend too slow to respond');
+          } else if (e.type == DioExceptionType.unknown) {
+            _logger.e('❌ Unknown Error: ${e.message}');
+          } else {
+            _logger.e('❌ Error: ${e.message}', error: e, stackTrace: e.stackTrace);
+          }
 
           if (e.response?.statusCode == 401) {
             // Token expired or invalid
-            // TODO: Implement token refresh or logout logic
+            _logger.w('🔑 Token expired, clearing authentication');
             await _storage.delete(key: 'auth_token');
           }
           

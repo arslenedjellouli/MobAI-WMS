@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:get_it/get_it.dart';
+import 'package:mobile_ai/core/database/isar_database.dart';
+import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
+import 'package:mobile_ai/config/routes/app_routes.dart';
 
 class EmployeeDashboardPage extends StatefulWidget {
   const EmployeeDashboardPage({super.key});
@@ -11,8 +15,8 @@ class EmployeeDashboardPage extends StatefulWidget {
 class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
   int _activeTabIndex = 0;
 
-  final _employeeName = 'Aris Kouache';
-  final _employeeId = '213';
+  late String _employeeName = 'Loading...';
+  late String _employeeId = 'N/A';
   final _isOnline = true;
   final _lastSync = 'now';
 
@@ -78,6 +82,53 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       skuCount: 12,
     ),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    try {
+      print('📚 [Dashboard] Loading user data from Isar...');
+      final db = GetIt.I<IsarDatabase>();
+      final isar = db.isar;
+      
+      // Get all users
+      final users = await isar.userCollections.buildQuery().findAll();
+      final user = users.isNotEmpty ? users.first : null;
+      
+      print('👤 [Dashboard] User found: ${user?.fullName}');
+      
+      if (user != null) {
+        setState(() {
+          _employeeName = user.fullName;
+          _employeeId = user.backendId ?? 'N/A';
+        });
+        print('✅ [Dashboard] User data updated: $_employeeName');
+      } else {
+        print('❌ [Dashboard] No user found in Isar database');
+        // Redirect to login if no user found
+        if (mounted) {
+          print('🔄 [Dashboard] Redirecting to login...');
+          Navigator.of(context).pushNamedAndRemoveUntil(
+            AppRoutes.login,
+            (route) => false,
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ [Dashboard] Error loading user: $e');
+      // Redirect to login on error
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          AppRoutes.login,
+          (route) => false,
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
