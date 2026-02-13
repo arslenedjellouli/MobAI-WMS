@@ -662,6 +662,64 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     developer.log('Report queued for sync (offline mode)', name: 'TaskReport');
   }
 
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Logout',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Are you sure you want to logout?',
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Logout',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // Clear tokens from database
+    final user = await _isar.userCollections.where().findFirst();
+    if (user != null) {
+      await _isar.writeTxn(() async {
+        user.accessToken = null;
+        user.refreshToken = null;
+        user.tokenExpiresAt = null;
+        await _isar.userCollections.put(user);
+      });
+    }
+
+    // Navigate to login and clear stack
+    if (mounted) {
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        '/login',
+        (route) => false,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -743,16 +801,28 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
-              icon: _isSyncing
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.sync, size: 20),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync, size: 20),
+                  tooltip: 'Sync',
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _handleLogout,
+                  icon: const Icon(Icons.logout, size: 20, color: Colors.red),
+                  tooltip: 'Logout',
+                ),
+              ],
             ),
             Row(
               children: [

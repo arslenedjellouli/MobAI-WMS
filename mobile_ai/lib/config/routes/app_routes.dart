@@ -1,9 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_dashboard_page.dart';
 
 import 'package:mobile_ai/features/dashboard/presentation/pages/employee_dashboard_page.dart';
+import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/access_help_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/pin_locked_page.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/supervisor_dashboard_page.dart';
+
+import 'package:mobile_ai/features/users/presentation/pages/user_management_page.dart';
+import 'package:mobile_ai/features/users/presentation/pages/add_user_page.dart';
+import 'package:mobile_ai/features/users/presentation/pages/edit_user_page.dart';
+
+import 'package:mobile_ai/features/inventory/presentation/pages/product_management_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/add_product_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/edit_product_page.dart';
+
+import 'package:mobile_ai/features/inventory/presentation/pages/chariot_management_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/add_chariot_page.dart';
+import 'package:mobile_ai/features/inventory/presentation/pages/edit_chariot_page.dart';
+
+import 'package:mobile_ai/features/warehouse/presentation/pages/warehouse_management_page.dart';
+import 'package:mobile_ai/features/warehouse/presentation/pages/add_warehouse_page.dart';
+
 
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
@@ -19,11 +38,25 @@ class AppRoutes {
 
   // Dashboard Routes
   static const String dashboard = '/dashboard';
+  static const String adminDashboard = '/admin-dashboard';
+  // User Management Routes
+  static const String userManagement = '/users';
+  static const String addUser = '/users/add';
+  static const String editUser = '/users/edit';
+
+  // Product Management Routes
+  static const String productManagement = '/products';
+  static const String addProduct = '/products/add';
+  static const String editProduct = '/products/edit';
+  static const String supervisorDashboard = '/supervisor-dashboard';
 
   // Daily Operation Routes
   static const String dailyOperation = '/daily-operation';
 
   // Warehouse Routes
+  static const String warehouses = '/warehouses';
+  static const String addWarehouse = '/warehouses/add';
+  static const String editWarehouse = '/warehouses/edit';
   static const String zones = '/zones';
   static const String zoneDetail = '/zones/:id';
   static const String locations = '/locations';
@@ -60,6 +93,8 @@ class AppRoutes {
 
   // Chariot Routes
   static const String chariots = '/chariots';
+  static const String addChariot = '/chariots/add';
+  static const String editChariot = '/chariots/edit';
   static const String chariotDetail = '/chariots/:id';
 
   // Reservation Routes
@@ -80,7 +115,7 @@ class AppRoutes {
     switch (settings.name) {
       case splash:
         return MaterialPageRoute(
-          builder: (_) => _placeholder('Splash', 'Checking authentication...'),
+          builder: (_) => const SplashPage(),
         );
 
       case login:
@@ -101,6 +136,74 @@ class AppRoutes {
       case dashboard:
         return MaterialPageRoute(
           builder: (_) => const EmployeeDashboardPage(),
+        );
+
+      case adminDashboard:
+        return MaterialPageRoute(
+          builder: (_) => const AdminDashboardPage(),
+        );
+
+      case userManagement:
+        return MaterialPageRoute(
+          builder: (_) => const UserManagementPage(),
+        );
+
+      case addUser:
+        return MaterialPageRoute(
+          builder: (_) => const AddUserPage(),
+        );
+
+      case editUser:
+        final user = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditUserPage(user: user),
+        );
+
+      case productManagement:
+        return MaterialPageRoute(
+          builder: (_) => const ProductManagementPage(),
+        );
+
+      case addProduct:
+        return MaterialPageRoute(
+          builder: (_) => const AddProductPage(),
+        );
+
+      case editProduct:
+        final product = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditProductPage(product: product),
+        );
+
+      case chariots:
+        return MaterialPageRoute(
+          builder: (_) => const ChariotManagementPage(),
+        );
+
+      case addChariot:
+        return MaterialPageRoute(
+          builder: (_) => const AddChariotPage(),
+        );
+
+      case editChariot:
+        final chariot = settings.arguments as Map<String, dynamic>;
+        return MaterialPageRoute(
+          builder: (_) => EditChariotPage(chariot: chariot),
+        );
+
+      case warehouses:
+        return MaterialPageRoute(
+          builder: (_) => const WarehouseManagementPage(),
+        );
+
+      case addWarehouse:
+        return MaterialPageRoute(
+          builder: (_) => const AddWarehousePage(),
+        );
+
+      case supervisorDashboard:
+        return MaterialPageRoute(
+          builder: (_) => const SupervisorDashboardPage(),
         );
 
       case bonPickings:
@@ -140,3 +243,6 @@ class AppRoutes {
     );
   }
 }
+
+
+
