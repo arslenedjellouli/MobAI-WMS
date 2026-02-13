@@ -107,16 +107,16 @@ Future<void> init() async {
   // ... other features
 }
 
-  // ========== Repositories ==========
+void _initAuthFeature() {
   sl.registerLazySingleton<AuthRemoteDataSource>(
     () => AuthRemoteDataSourceImpl(client: sl()),
   );
-  
+
   sl.registerLazySingleton<AuthRepository>(
     () => AuthRepositoryImpl(
-      remoteDataSource: sl(), 
-      db: sl(), 
-      storage: sl()
+      remoteDataSource: sl(),
+      db: sl(),
+      storage: sl(),
     ),
   );
 
@@ -127,30 +127,11 @@ Future<void> init() async {
   sl.registerLazySingleton<StockRepository>(
     () => StockRepositoryImpl(db: sl()),
   );
-  //       logoutUseCase: sl(),
-  //       getCurrentUserUseCase: sl(),
-  //     ));
 
   // Use Cases
   // sl.registerLazySingleton(() => LoginUseCase(sl()));
   // sl.registerLazySingleton(() => LogoutUseCase(sl()));
   // sl.registerLazySingleton(() => GetCurrentUserUseCase(sl()));
-
-  // Repository
-  // sl.registerLazySingleton<AuthRepository>(
-  //   () => AuthRepositoryImpl(
-  //     localDataSource: sl(),
-  //     remoteDataSource: sl(),
-  //   ),
-  // );
-
-  // Data Sources
-  // sl.registerLazySingleton<AuthLocalDataSource>(
-  //   () => AuthLocalDataSourceImpl(sharedPreferences: sl()),
-  // );
-  // sl.registerLazySingleton<AuthRemoteDataSource>(
-  //   () => AuthRemoteDataSourceImpl(client: sl()),
-  // );
 }
 
 // Template for other features

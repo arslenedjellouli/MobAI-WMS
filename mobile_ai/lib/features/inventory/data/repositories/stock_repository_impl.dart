@@ -39,9 +39,9 @@ class StockRepositoryImpl implements StockRepository {
     try {
       final isar = db.isar;
       // Assuming SKUCollection has 'code' index
-      final sku = await isar.sKUCollections
+        final sku = await isar.sKUCollections
           .filter()
-          .codeEqualTo(skuCode)
+          .skuCodeEqualTo(skuCode)
           .findFirst();
           
       return Right(sku);

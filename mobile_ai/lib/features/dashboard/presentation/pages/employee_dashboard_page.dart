@@ -709,7 +709,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     const optionRowHeight = 44.0;
     final targetHeight = baseHeight + (optionRowHeight * optionCount);
     final fraction = targetHeight / screenHeight;
-    return fraction.clamp(0.45, 0.9) as double;
+    return fraction.clamp(0.45, 0.9);
   }
 
   List<String> _reportOptionsFor(TaskType type) {

@@ -19,6 +19,7 @@ dependencies:
 
   # Network
   dio: ^5.4.0
+  http: ^1.1.0
   connectivity_plus: ^6.0.0
 
   # Local Storage (Isar Database)
@@ -33,6 +34,7 @@ dependencies:
   intl: ^0.19.0
   logger: ^2.0.2+1
   google_fonts: ^6.2.1
+  dartz: ^0.10.1
 
 dev_dependencies:
   flutter_test:
@@ -48,10 +50,10 @@ flutter:
   uses-material-design: true
 
   # TODO: Add assets when design phase begins
-  # assets:
-  #   - assets/images/
-  #   - assets/icons/
-  #   - assets/logos/
+  assets:
+    - assets/BlueWMS.png
+    - assets/WhiteWMS.png
+    - assets/YellowWMS.png
 
   # TODO: Add custom fonts if needed
   # fonts:

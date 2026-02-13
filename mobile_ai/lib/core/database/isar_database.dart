@@ -120,7 +120,6 @@ class IsarDatabase {
     );
 
     print('✅ Isar database initialized successfully');
-    print('📊 Collections: ${_isar!.schemas.length}');
     print('📁 Path: ${dir.path}/mobai_wms.isar');
     print('🔍 Inspector: http://localhost:8080');
   }
