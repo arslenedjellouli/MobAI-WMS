@@ -23,7 +23,7 @@ class MobAIApp extends StatelessWidget {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.light,
-      initialRoute: AppRoutes.splash,
+      initialRoute: AppRoutes.dashboard,
       onGenerateRoute: AppRoutes.onGenerateRoute,
     );
   }
