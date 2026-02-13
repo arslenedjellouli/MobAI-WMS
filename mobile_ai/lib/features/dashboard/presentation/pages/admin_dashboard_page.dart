@@ -1,8 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:math' as math;
-
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:isar/isar.dart';
@@ -34,57 +29,9 @@ import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
-import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
-import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
-import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
-import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
-import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
-import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
-import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 
-class AdminDashboardPage extends StatefulWidget {
+class AdminDashboardPage extends StatelessWidget {
   const AdminDashboardPage({super.key});
-
-  @override
-  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
-}
-
-class _AdminDashboardPageState extends State<AdminDashboardPage> {
-  final Isar _isar = sl<IsarDatabase>().isar;
-  final ApiClient _apiClient = sl<ApiClient>();
-  final SyncService _syncService = sl<SyncService>();
-  final ConnectivityService _connectivityService = sl<ConnectivityService>();
-  final FloorRemoteDatasource _floorRemoteDatasource =
-      FloorRemoteDatasourceImpl(apiClient: sl<ApiClient>());
-  final WarehouseRemoteDatasource _warehouseRemoteDatasource =
-      WarehouseRemoteDatasourceImpl(apiClient: sl<ApiClient>());
-  final ChariotRemoteDatasource _chariotRemoteDatasource =
-      ChariotRemoteDatasourceImpl(apiClient: sl<ApiClient>());
-
-  bool _isLoading = true;
-  bool _isOnline = false;
-
-  String _adminName = 'Administrator';
-  String? _adminWarehouseId;
-
-  @override
-  void initState() {
-    super.initState();
-    _initializePage();
-  }
-
-  Future<void> _initializePage() async {
-    final user = await _isar.userCollections.where().findFirst();
-    final isOnline = await _connectivityService.checkConnection();
-
-    if (!mounted) return;
-    setState(() {
-      _adminName = user?.fullName ?? 'Administrator';
-      _adminWarehouseId = user?.warehouseId;
-      _isOnline = isOnline;
-      _isLoading = false;
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -193,12 +140,63 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ],
         ),
         const Spacer(),
-        IconButton(
-          onPressed: () {
-            // TODO: Implement notifications
-          },
-          icon: const Icon(Icons.notifications_outlined),
-          color: const Color(0xFF64748B),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync, size: 20),
+                  color: const Color(0xFF64748B),
+                  tooltip: 'Sync',
+                ),
+                IconButton(
+                  onPressed: _handleLogout,
+                  icon: const Icon(Icons.logout, size: 20, color: Colors.red),
+                  tooltip: 'Logout',
+                ),
+              ],
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _isOnline ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _isOnline ? 'Online' : 'Offline',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Last sync: $_lastSync',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF94A3B8),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ],
     );
