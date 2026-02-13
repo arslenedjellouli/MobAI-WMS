@@ -18,9 +18,10 @@ import 'package:mobile_ai/features/inventory/presentation/pages/add_product_page
 import 'package:mobile_ai/features/inventory/presentation/pages/edit_product_page.dart';
 import 'package:mobile_ai/features/inventory/data/models/product_api_models.dart';
 
-import 'package:mobile_ai/features/inventory/presentation/pages/chariot_management_page.dart';
-import 'package:mobile_ai/features/inventory/presentation/pages/add_chariot_page.dart';
-import 'package:mobile_ai/features/inventory/presentation/pages/edit_chariot_page.dart';
+import 'package:mobile_ai/features/chariots/presentation/pages/chariot_management_page.dart';
+import 'package:mobile_ai/features/chariots/presentation/pages/add_chariot_page.dart';
+import 'package:mobile_ai/features/chariots/presentation/pages/edit_chariot_page.dart';
+import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
 
 import 'package:mobile_ai/features/warehouse/presentation/pages/warehouse_management_page.dart';
 import 'package:mobile_ai/features/warehouse/presentation/pages/add_warehouse_page.dart';
@@ -190,7 +191,7 @@ class AppRoutes {
         );
 
       case editChariot:
-        final chariot = settings.arguments as Map<String, dynamic>;
+        final chariot = settings.arguments as ChariotApiModel;
         return MaterialPageRoute(
           builder: (_) => EditChariotPage(chariot: chariot),
         );

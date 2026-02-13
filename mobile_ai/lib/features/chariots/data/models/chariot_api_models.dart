@@ -5,17 +5,24 @@ part 'chariot_api_models.g.dart';
 /// Chariot API Model - Response from backend
 @JsonSerializable(fieldRename: FieldRename.snake)
 class ChariotApiModel {
+  @JsonKey(fromJson: _parseString)
   final String id;
+  @JsonKey(fromJson: _parseString)
   final String code;
-  final String type;
+  @JsonKey(fromJson: _parseDouble)
   final double capacity;
+  @JsonKey(fromJson: _parseString)
   final String status;
+  final String? warehouse;
+  final String? warehouseName;
   final String? currentOperator;
   final String? operatorName;
   final String? currentLocation;
   final String? locationCode;
+  final String? currentPosition;
   final String? lastMaintenanceDate;
   final String? nextMaintenanceDate;
+  @JsonKey(fromJson: _parseIntNullable)
   final int? assignmentsCount;
   final bool? isMaintenanceDue;
   final String? createdAt;
@@ -24,13 +31,15 @@ class ChariotApiModel {
   ChariotApiModel({
     required this.id,
     required this.code,
-    required this.type,
     required this.capacity,
     required this.status,
+    this.warehouse,
+    this.warehouseName,
     this.currentOperator,
     this.operatorName,
     this.currentLocation,
     this.locationCode,
+    this.currentPosition,
     this.lastMaintenanceDate,
     this.nextMaintenanceDate,
     this.assignmentsCount,
@@ -43,6 +52,43 @@ class ChariotApiModel {
       _$ChariotApiModelFromJson(json);
 
   Map<String, dynamic> toJson() => _$ChariotApiModelToJson(this);
+
+  static double _parseDouble(Object? value) {
+    if (value == null) {
+      return 0;
+    }
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value.toString()) ?? 0;
+  }
+
+  static String _parseString(Object? value) {
+    if (value == null) {
+      return '';
+    }
+    return value.toString();
+  }
+
+  static int? _parseIntNullable(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return int.tryParse(value.toString());
+  }
+
+  static int _parseInt(Object? value) {
+    if (value == null) {
+      return 0;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return int.tryParse(value.toString()) ?? 0;
+  }
 
   /// Get status display text
   String get statusDisplay {
@@ -81,21 +127,23 @@ class ChariotApiModel {
 @JsonSerializable(fieldRename: FieldRename.snake, includeIfNull: false)
 class ChariotCreateRequest {
   final String code;
-  final String type;
   final double capacity;
   final String status;
+  final String? warehouse;
   final String? currentOperator;
   final String? currentLocation;
+  final String? currentPosition;
   final String? lastMaintenanceDate;
   final String? nextMaintenanceDate;
 
   ChariotCreateRequest({
     required this.code,
-    required this.type,
     required this.capacity,
     required this.status,
+    this.warehouse,
     this.currentOperator,
     this.currentLocation,
+    this.currentPosition,
     this.lastMaintenanceDate,
     this.nextMaintenanceDate,
   });
@@ -110,21 +158,23 @@ class ChariotCreateRequest {
 @JsonSerializable(fieldRename: FieldRename.snake, includeIfNull: false)
 class ChariotUpdateRequest {
   final String? code;
-  final String? type;
   final double? capacity;
   final String? status;
+  final String? warehouse;
   final String? currentOperator;
   final String? currentLocation;
+  final String? currentPosition;
   final String? lastMaintenanceDate;
   final String? nextMaintenanceDate;
 
   ChariotUpdateRequest({
     this.code,
-    this.type,
     this.capacity,
     this.status,
+    this.warehouse,
     this.currentOperator,
     this.currentLocation,
+    this.currentPosition,
     this.lastMaintenanceDate,
     this.nextMaintenanceDate,
   });
@@ -138,6 +188,7 @@ class ChariotUpdateRequest {
 /// Chariot List Response - Paginated list from backend
 @JsonSerializable(fieldRename: FieldRename.snake)
 class ChariotListResponse {
+  @JsonKey(fromJson: ChariotApiModel._parseInt)
   final int count;
   final String? next;
   final String? previous;

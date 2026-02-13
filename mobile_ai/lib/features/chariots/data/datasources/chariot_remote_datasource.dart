@@ -15,14 +15,14 @@ abstract class ChariotRemoteDatasource {
 class ChariotRemoteDatasourceImpl implements ChariotRemoteDatasource {
   final ApiClient apiClient;
 
-  ChariotRemoteDatasourceImpl({required this.apiClient);
+  ChariotRemoteDatasourceImpl({required this.apiClient});
 
   @override
   Future<ChariotListResponse> getChariots(
       {int page = 1, int pageSize = 10}) async {
     try {
       final response = await apiClient.get(
-        '/v1/chariots/',
+        '/v1/operations/chariots/',
         queryParameters: {
           'page': page,
           'page_size': pageSize,
@@ -38,7 +38,7 @@ class ChariotRemoteDatasourceImpl implements ChariotRemoteDatasource {
   @override
   Future<ChariotApiModel> getChariot(String chariotId) async {
     try {
-      final response = await apiClient.get('/v1/chariots/$chariotId/');
+      final response = await apiClient.get('/v1/operations/chariots/$chariotId/');
       return ChariotApiModel.fromJson(response.data);
     } on DioException catch (e) {
       throw Exception('Failed to fetch chariot details: ${e.message}');
@@ -49,7 +49,7 @@ class ChariotRemoteDatasourceImpl implements ChariotRemoteDatasource {
   Future<ChariotApiModel> createChariot(ChariotCreateRequest request) async {
     try {
       final response =
-          await apiClient.post('/v1/chariots/', data: request.toJson());
+          await apiClient.post('/v1/operations/chariots/', data: request.toJson());
       return ChariotApiModel.fromJson(response.data);
     } on DioException catch (e) {
       if (e.response?.statusCode == 400) {
@@ -69,7 +69,8 @@ class ChariotRemoteDatasourceImpl implements ChariotRemoteDatasource {
   Future<ChariotApiModel> updateChariot(
       String chariotId, ChariotUpdateRequest request) async {
     try {
-      final response = await apiClient.patch('/v1/chariots/$chariotId/',
+        final response = await apiClient.patch(
+          '/v1/operations/chariots/$chariotId/',
           data: request.toJson());
       return ChariotApiModel.fromJson(response.data);
     } on DioException catch (e) {
@@ -89,7 +90,7 @@ class ChariotRemoteDatasourceImpl implements ChariotRemoteDatasource {
   @override
   Future<void> deleteChariot(String chariotId) async {
     try {
-      await apiClient.delete('/v1/chariots/$chariotId/');
+      await apiClient.delete('/v1/operations/chariots/$chariotId/');
     } on DioException catch (e) {
       throw Exception('Failed to delete chariot: ${e.message}');
     }

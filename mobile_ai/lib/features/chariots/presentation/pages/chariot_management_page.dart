@@ -342,14 +342,6 @@ class _ChariotCard extends StatelessWidget {
                             color: const Color(0xFF0F172A),
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          chariot.type.isEmpty ? 'No Type' : chariot.type,
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            color: const Color(0xFF64748B),
-                          ),
-                        ),
                       ],
                     ),
                   ),

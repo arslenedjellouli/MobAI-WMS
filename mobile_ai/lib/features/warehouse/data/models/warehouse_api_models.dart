@@ -159,13 +159,31 @@ class FloorGridItemApiModel {
       itemId: json['item_id']?.toString(),
       itemType: json['item_type'] ?? '',
       itemTypeDisplay: json['item_type_display']?.toString(),
-      x: json['x'] ?? 0,
-      y: json['y'] ?? 0,
-      width: json['width'] ?? 1,
-      height: json['height'] ?? 1,
+      x: _parseInt(json['x']) ?? 0,
+      y: _parseInt(json['y']) ?? 0,
+      width: _parseInt(json['width']) ?? 1,
+      height: _parseInt(json['height']) ?? 1,
       createdAt: json['created_at'] != null ? DateTime.tryParse(json['created_at']) : null,
       updatedAt: json['updated_at'] != null ? DateTime.tryParse(json['updated_at']) : null,
     );
+  }
+
+  static int? _parseInt(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is num) {
+      return value.round();
+    }
+    final parsedInt = int.tryParse(value.toString());
+    if (parsedInt != null) {
+      return parsedInt;
+    }
+    final parsedDouble = double.tryParse(value.toString());
+    if (parsedDouble != null) {
+      return parsedDouble.round();
+    }
+    return null;
   }
 
   Map<String, dynamic> toJson() {
@@ -213,16 +231,34 @@ class FloorApiModel {
     final gridItemsJson = json['grid_items'] as List<dynamic>? ?? [];
     final gridItems = gridItemsJson.map((item) => FloorGridItemApiModel.fromJson(item as Map<String, dynamic>)).toList();
 
+    int parseInt(Object? value, int fallback) {
+      if (value == null) {
+        return fallback;
+      }
+      if (value is num) {
+        return value.round();
+      }
+      final parsedInt = int.tryParse(value.toString());
+      if (parsedInt != null) {
+        return parsedInt;
+      }
+      final parsedDouble = double.tryParse(value.toString());
+      if (parsedDouble != null) {
+        return parsedDouble.round();
+      }
+      return fallback;
+    }
+
     return FloorApiModel(
       id: json['id']?.toString() ?? '',
       warehouseId: json['warehouse']?.toString() ?? '',
       warehouseName: json['warehouse_name']?.toString(),
-      levelNumber: json['level_number'] ?? 0,
+      levelNumber: parseInt(json['level_number'], 0),
       floorType: json['floor_type']?.toString() ?? 'STORAGE',
       floorTypeDisplay: json['floor_type_display']?.toString() ?? 'Storage',
       description: json['description']?.toString(),
-      matrixRows: json['matrix_rows'] ?? 10,
-      matrixColumns: json['matrix_columns'] ?? 10,
+      matrixRows: parseInt(json['matrix_rows'], 10),
+      matrixColumns: parseInt(json['matrix_columns'], 10),
       gridItems: gridItems,
       createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
       updatedAt: json['updated_at'] != null ? DateTime.tryParse(json['updated_at']) : null,
