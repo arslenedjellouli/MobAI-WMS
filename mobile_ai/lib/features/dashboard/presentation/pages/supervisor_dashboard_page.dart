@@ -8,23 +8,38 @@ import 'package:isar/isar.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_item_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_item_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_item_collection.dart';
 import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_queue_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/floor_collection.dart';
 import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/section_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/slot_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/warehouse_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/zone_collection.dart';
 import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
 import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 import 'package:mobile_ai/shared/widgets/app_bottom_bar.dart';
 
 class SupervisorDashboardPage extends StatefulWidget {
@@ -37,21 +52,31 @@ class SupervisorDashboardPage extends StatefulWidget {
 
 class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   final Isar _isar = sl<IsarDatabase>().isar;
+  final ApiClient _apiClient = sl<ApiClient>();
   final SyncService _syncService = sl<SyncService>();
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final FloorRemoteDatasource _floorRemoteDatasource =
+      FloorRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+    final WarehouseRemoteDatasource _warehouseRemoteDatasource =
+      WarehouseRemoteDatasourceImpl(apiClient: sl<ApiClient>());
   final Uuid _uuid = const Uuid();
   final PageController _reportedPageController = PageController(
+    viewportFraction: 0.96,
+  );
+  final PageController _proposedPageController = PageController(
     viewportFraction: 0.96,
   );
 
   AppBottomTab _currentView = AppBottomTab.home;
   ProposedTaskFilter _selectedFilter = ProposedTaskFilter.forecast;
+  ReportIssueFilter _selectedReportFilter = ReportIssueFilter.all;
   TaskTypeFilter _searchFilter = TaskTypeFilter.reports;
   bool _isLoading = true;
   bool _isSyncing = false;
 
   String _supervisorName = 'Supervisor';
   String _supervisorId = '-';
+  String? _supervisorWarehouseId;
   bool _isOnline = false;
   String _lastSync = 'Never';
   final TextEditingController _searchController = TextEditingController();
@@ -64,6 +89,13 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   int _transferCount = 0;
   int _pickingCount = 0;
   int _currentReportedPage = 0;
+  int _currentProposedPage = 0;
+
+  MonitorOrderFilter _monitorOrderFilter = MonitorOrderFilter.all;
+  String? _selectedMonitorChariotCode;
+  int _selectedMonitorFloorIndex = 0;
+  Future<_MonitorDataBundle>? _monitorFuture;
+  final Set<String> _expandedMonitorOrderIds = <String>{};
 
   StreamSubscription<NetworkStatus>? _networkSub;
 
@@ -77,6 +109,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   void dispose() {
     _networkSub?.cancel();
     _reportedPageController.dispose();
+    _proposedPageController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -92,6 +125,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     });
 
     await _loadDashboardData();
+    _monitorFuture = _loadMonitorData();
 
     if (_isOnline) {
       await _triggerSync(showLoader: false);
@@ -99,7 +133,12 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Future<void> _loadDashboardData() async {
-    final user = await _isar.userCollections.where().findFirst();
+    final users = await _isar.userCollections.where().findAll();
+    final user = users
+            .where((entry) => entry.accessToken != null && entry.accessToken!.isNotEmpty)
+            .cast<UserCollection?>()
+            .firstWhere((value) => value != null, orElse: () => null) ??
+        (users.isNotEmpty ? users.first : null);
 
     final syncMeta = await _isar.syncMetadataCollections
         .filter()
@@ -229,6 +268,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     setState(() {
       _supervisorName = user?.fullName ?? 'Supervisor';
       _supervisorId = user?.backendId ?? (user?.id.toString() ?? '-');
+      _supervisorWarehouseId = user?.warehouseId;
       _lastSync = _formatSyncDate(syncMeta?.lastPullAt ?? syncMeta?.lastPushAt);
 
       _reportedTasks
@@ -243,17 +283,15 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         ..clear()
         ..addAll(history);
 
-      if (_reportedTasks.isEmpty) {
-        _currentReportedPage = 0;
-      } else {
-        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
-      }
+      _syncReportedPageToFiltered();
+      _syncProposedPageToFiltered();
 
       _receiptCount = receiptCount;
       _transferCount = transferCount;
       _pickingCount = pickingCount;
 
       _isLoading = false;
+      _monitorFuture = _loadMonitorData();
     });
   }
 
@@ -587,23 +625,143 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   Map<String, dynamic>? _extractAiTransferDecisionFromNotes(String? notes) {
     if (notes == null || notes.isEmpty) return null;
-    final line = notes
-        .split('\n')
-        .map((value) => value.trim())
-        .firstWhere(
-          (value) => value.startsWith('AI_TRANSFER_DECISION:'),
-          orElse: () => '',
-        );
-    if (line.isEmpty) return null;
 
-    final payload = line.replaceFirst('AI_TRANSFER_DECISION:', '').trim();
-    if (payload.isEmpty) return null;
+    final trimmed = notes.trim();
 
     try {
-      final decoded = jsonDecode(payload);
+      final decoded = jsonDecode(trimmed);
       if (decoded is Map<String, dynamic>) return decoded;
     } catch (_) {}
+
+    final prefixes = ['AI_TRANSFER_DECISION:', 'AI_DECISION:', 'ROUTING_STRATEGY:'];
+    for (final prefix in prefixes) {
+      final line = notes
+          .split('\n')
+          .map((value) => value.trim())
+          .firstWhere(
+            (value) => value.startsWith(prefix),
+            orElse: () => '',
+          );
+      if (line.isEmpty) continue;
+
+      final payload = line.replaceFirst(prefix, '').trim();
+      if (payload.isEmpty) continue;
+
+      try {
+        final decoded = jsonDecode(payload);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {}
+    }
+
     return null;
+  }
+
+  String? _extractLocationOverrideFromNotes(String? notes) {
+    if (notes == null || notes.isEmpty) return null;
+
+    final lines = notes.split('\n').map((value) => value.trim()).toList().reversed;
+    for (final line in lines) {
+      if (!line.startsWith('LOCATION_OVERRIDE:')) continue;
+      final payload = line.replaceFirst('LOCATION_OVERRIDE:', '').trim();
+      if (payload.isNotEmpty) return payload;
+    }
+
+    return null;
+  }
+
+  List<String> _deriveMonitorRouteNodesFromNotes({
+    required String? notes,
+    required MonitorOrderStatus status,
+  }) {
+    final aiPayload = _extractAiTransferDecisionFromNotes(notes);
+    final overrideLocationCode = _extractLocationOverrideFromNotes(notes);
+
+    List<String> normalize(dynamic raw) {
+      if (raw is! List) return const [];
+      return raw
+          .map((entry) => entry.toString().trim())
+          .where((entry) => entry.isNotEmpty)
+          .toList();
+    }
+
+    List<String> dedupeSequential(List<String> nodes) {
+      final normalized = <String>[];
+      for (final node in nodes) {
+        if (normalized.isEmpty || normalized.last.toUpperCase() != node.toUpperCase()) {
+          normalized.add(node);
+        }
+      }
+      return normalized;
+    }
+
+    if (status == MonitorOrderStatus.pending) {
+      return const ['EXP_NODE'];
+    }
+
+    final optimized = normalize(aiPayload?['optimized_path']);
+    final route = normalize(aiPayload?['route']);
+    final returnPath = normalize(aiPayload?['return_path']);
+    final aiLocationCode = aiPayload?['location_code']?.toString().trim();
+
+    final forward = <String>[];
+
+    final hasSupervisorOverride =
+        overrideLocationCode != null && overrideLocationCode.isNotEmpty;
+
+    if (hasSupervisorOverride) {
+      forward.add('EXP_NODE');
+      forward.add(overrideLocationCode);
+    } else if (optimized.isNotEmpty) {
+      forward.addAll(optimized);
+    } else if (route.isNotEmpty) {
+      forward.addAll(route);
+    } else {
+      forward.add('EXP_NODE');
+      if (aiLocationCode != null && aiLocationCode.isNotEmpty) {
+        forward.add(aiLocationCode);
+      }
+    }
+
+    if (forward.isEmpty) {
+      forward.add('EXP_NODE');
+    }
+
+    if (forward.first.toUpperCase() != 'EXP_NODE') {
+      forward.insert(0, 'EXP_NODE');
+    }
+
+    final normalizedForward = dedupeSequential(forward);
+
+    if (!hasSupervisorOverride &&
+        status == MonitorOrderStatus.complete &&
+        returnPath.isNotEmpty) {
+      final merged = <String>[...normalizedForward];
+      for (final node in returnPath) {
+        if (merged.isEmpty || merged.last.toUpperCase() != node.toUpperCase()) {
+          merged.add(node);
+        }
+      }
+      return dedupeSequential(merged);
+    }
+
+    return normalizedForward;
+  }
+
+  List<String> _extractRouteNodesFromAIPayload(Map<String, dynamic>? payload) {
+    if (payload == null) return const [];
+
+    List<String> normalize(dynamic raw) {
+      if (raw is! List) return const [];
+      return raw.map((entry) => entry.toString().trim()).where((entry) => entry.isNotEmpty).toList();
+    }
+
+    final optimized = normalize(payload['optimized_path']);
+    if (optimized.isNotEmpty) return optimized;
+
+    final route = normalize(payload['route']);
+    if (route.isNotEmpty) return route;
+
+    return normalize(payload['return_path']);
   }
 
   String _aiFloorLabel(dynamic floor) {
@@ -794,11 +952,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     setState(() {
       _reportedTasks.remove(task);
       _proposedTasks.insert(0, task);
-      if (_reportedTasks.isEmpty) {
-        _currentReportedPage = 0;
-      } else {
-        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
-      }
+      _syncReportedPageToFiltered();
     });
 
     _addHistoryAction('Re-Assigned', task.code, task.type);
@@ -922,11 +1076,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     setState(() {
       _reportedTasks.remove(task);
-      if (_reportedTasks.isEmpty) {
-        _currentReportedPage = 0;
-      } else {
-        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
-      }
+      _syncReportedPageToFiltered();
     });
 
     _addHistoryAction('Deleted', task.code, task.type);
@@ -967,6 +1117,32 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     return _proposedTasks
       .where((task) => _selectedFilter.matches(task.type))
         .toList();
+  }
+
+  List<_TaskCardData> get _filteredReportedTasks {
+    return _reportedTasks
+        .where((task) => _selectedReportFilter.matches(task))
+        .toList();
+  }
+
+  void _syncReportedPageToFiltered() {
+    final filtered = _filteredReportedTasks;
+    if (filtered.isEmpty) {
+      _currentReportedPage = 0;
+      return;
+    }
+
+    _currentReportedPage = math.min(_currentReportedPage, filtered.length - 1);
+  }
+
+  void _syncProposedPageToFiltered() {
+    final filtered = _filteredProposedTasks;
+    if (filtered.isEmpty) {
+      _currentProposedPage = 0;
+      return;
+    }
+
+    _currentProposedPage = math.min(_currentProposedPage, filtered.length - 1);
   }
 
   Future<void> _handleLogout() async {
@@ -1078,16 +1254,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       case AppBottomTab.history:
         body = _buildHistoryView(textTheme);
       case AppBottomTab.monitor:
-        body = Center(
-          child: Text(
-            'Monitor section under development',
-            style: GoogleFonts.manrope(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFF64748B),
-            ),
-          ),
-        );
+        body = _buildMonitorView(textTheme);
     }
 
     return Scaffold(
@@ -1153,38 +1320,37 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                 ),
               ),
               const SizedBox(height: 16),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
+              Center(
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: TaskTypeFilter.values.map((filter) {
                     final isSelected = _searchFilter == filter;
                     final color = filter.color;
 
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: InkWell(
-                        onTap: () => setState(() => _searchFilter = filter),
-                        borderRadius: BorderRadius.circular(20),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 10,
+                    return InkWell(
+                      onTap: () => setState(() => _searchFilter = filter),
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isSelected ? color : Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: isSelected ? color : const Color(0xFFE2E8F0),
+                            width: 2,
                           ),
-                          decoration: BoxDecoration(
-                            color: isSelected ? color : Colors.white,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: isSelected ? color : const Color(0xFFE2E8F0),
-                              width: 2,
-                            ),
-                          ),
-                          child: Text(
-                            filter.label,
-                            style: GoogleFonts.manrope(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: isSelected ? Colors.white : const Color(0xFF64748B),
-                            ),
+                        ),
+                        child: Text(
+                          filter.label,
+                          style: GoogleFonts.manrope(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: isSelected ? Colors.white : const Color(0xFF64748B),
                           ),
                         ),
                       ),
@@ -1212,17 +1378,22 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                   itemCount: filteredTasks.length,
                   itemBuilder: (context, index) {
                     final task = filteredTasks[index];
-                    final isReported = _reportedTasks.contains(task);
-                    final isProposed = _proposedTasks.contains(task);
+                    final isReported = task.isEmployeeReport;
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 16),
-                      child: _SupervisorTaskCard(
-                        data: task,
-                        showReviewButton: isProposed || isReported,
-                        onReassign: null,
-                        onReview: isProposed
-                            ? () => _reviewTask(task)
-                            : (isReported ? () => _reviewReport(task) : null),
+                      child: Center(
+                        child: SizedBox(
+                          width: 356,
+                          height: 252,
+                          child: _SupervisorTaskCard(
+                            data: task,
+                            showReviewButton: true,
+                            onReassign: null,
+                            onReview: isReported
+                                ? () => _reviewReport(task)
+                                : () => _reviewTask(task),
+                          ),
+                        ),
                       ),
                     );
                   },
@@ -1412,7 +1583,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     border: Border.all(color: const Color(0xFFE2E8F0)),
                   ),
                   child: Text(
-                    '${_proposedTasks.length} Proposals | ${_reportedTasks.length} Reviews',
+                    '${_reportedTasks.length} Proposals | ${_proposedTasks.length} Reviews',
                     style: GoogleFonts.manrope(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -1430,7 +1601,11 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildHandleReports(TextTheme textTheme) {
-    final selectedColor = _selectedFilter.color;
+    final selectedColor = _selectedReportFilter.color;
+    final filteredReports = _filteredReportedTasks;
+    final currentPage = filteredReports.isEmpty
+        ? 0
+        : math.min(_currentReportedPage, filteredReports.length - 1);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1444,30 +1619,32 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           ),
         ),
         const SizedBox(height: 16),
-        if (_reportedTasks.isEmpty)
+        _buildReportFilterButtons(),
+        const SizedBox(height: 12),
+        if (filteredReports.isEmpty)
           _buildEmptyState(textTheme, 'No reported issues.')
         else ...[
           SizedBox(
-            height: 140,
+            height: 266,
             child: PageView.builder(
               controller: _reportedPageController,
-              itemCount: _reportedTasks.length,
+              itemCount: filteredReports.length,
               onPageChanged: (index) {
                 setState(() {
                   _currentReportedPage = index;
                 });
               },
               itemBuilder: (context, index) {
-                final task = _reportedTasks[index];
+                final task = filteredReports[index];
                 return Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: Center(
                     child: SizedBox(
-                      width: 302,
-                      height: 123,
+                      width: 356,
+                      height: 252,
                       child: _SupervisorTaskCard(
                         data: task,
-                        compact: true,
+                        compact: false,
                         overrideColor: selectedColor,
                         onReview: () => _reviewReport(task),
                       ),
@@ -1480,8 +1657,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(_reportedTasks.length, (index) {
-              final isActive = index == _currentReportedPage;
+            children: List.generate(filteredReports.length, (index) {
+              final isActive = index == currentPage;
               return Container(
                 margin: const EdgeInsets.symmetric(horizontal: 4),
                 width: isActive ? 10 : 8,
@@ -1500,49 +1677,85 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
   Widget _buildReviewProposedTasks(TextTheme textTheme) {
     final filteredTasks = _filteredProposedTasks;
+    final selectedColor = _selectedFilter.color;
+    final currentPage = filteredTasks.isEmpty
+        ? 0
+        : math.min(_currentProposedPage, filteredTasks.length - 1);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Center(
-          child: Text(
-            'Review AI Proposed Tasks',
-            textAlign: TextAlign.center,
-            style: GoogleFonts.manrope(
-              textStyle: textTheme.titleLarge,
-              fontWeight: FontWeight.w700,
-              color: const Color(0xFF0F172A),
-            ),
+        Text(
+          'Review AI Proposed Tasks',
+          style: GoogleFonts.manrope(
+            textStyle: textTheme.titleLarge,
+            fontWeight: FontWeight.w700,
+            color: const Color(0xFF0F172A),
           ),
         ),
         const SizedBox(height: 16),
         _buildFilterButtons(),
         const SizedBox(height: 10),
-        Center(
-          child: Text(
-            _selectedFilter.description,
-            textAlign: TextAlign.center,
-            style: GoogleFonts.manrope(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFF64748B),
-            ),
+        Text(
+          _selectedFilter.description,
+          style: GoogleFonts.manrope(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: const Color(0xFF64748B),
           ),
         ),
         const SizedBox(height: 16),
         if (filteredTasks.isEmpty)
           _buildEmptyState(textTheme, 'No proposed tasks.')
-        else
-          ...filteredTasks.map(
-            (task) => Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: _SupervisorTaskCard(
-                data: task,
-                showReviewButton: true,
-                onReview: () => _reviewTask(task),
-              ),
+        else ...[
+          SizedBox(
+            height: 252,
+            child: PageView.builder(
+              controller: _proposedPageController,
+              itemCount: filteredTasks.length,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentProposedPage = index;
+                });
+              },
+              itemBuilder: (context, index) {
+                final task = filteredTasks[index];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    child: SizedBox(
+                      width: 356,
+                      height: 252,
+                      child: _SupervisorTaskCard(
+                        data: task,
+                        showReviewButton: true,
+                        compact: false,
+                        overrideColor: selectedColor,
+                        onReview: () => _reviewTask(task),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(filteredTasks.length, (index) {
+              final isActive = index == currentPage;
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: isActive ? 10 : 8,
+                height: isActive ? 10 : 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isActive ? selectedColor : selectedColor.withOpacity(0.25),
+                ),
+              );
+            }),
+          ),
+        ],
       ],
     );
   }
@@ -1553,7 +1766,16 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       final color = filter.color;
 
       return InkWell(
-        onTap: () => setState(() => _selectedFilter = filter),
+        onTap: () {
+          setState(() {
+            _selectedFilter = filter;
+            _currentProposedPage = 0;
+            _syncProposedPageToFiltered();
+          });
+          if (_proposedPageController.hasClients) {
+            _proposedPageController.jumpToPage(0);
+          }
+        },
         borderRadius: BorderRadius.circular(20),
         child: Container(
           padding: const EdgeInsets.symmetric(
@@ -1591,6 +1813,48 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
   }
 
+  Widget _buildReportFilterButtons() {
+    final chips = ReportIssueFilter.values.map((filter) {
+      final isSelected = _selectedReportFilter == filter;
+
+      return InkWell(
+        onTap: () {
+          setState(() {
+            _selectedReportFilter = filter;
+            _currentReportedPage = 0;
+            _syncReportedPageToFiltered();
+          });
+          if (_reportedPageController.hasClients) {
+            _reportedPageController.jumpToPage(0);
+          }
+        },
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          margin: const EdgeInsets.only(right: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? filter.color : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: filter.color.withOpacity(0.8)),
+          ),
+          child: Text(
+            filter.label,
+            style: GoogleFonts.manrope(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: isSelected ? Colors.white : filter.color,
+            ),
+          ),
+        ),
+      );
+    }).toList();
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(children: chips),
+    );
+  }
+
   Widget _buildEmptyState(TextTheme textTheme, String message) {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1613,6 +1877,2131 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildMonitorView(TextTheme textTheme) {
+    _monitorFuture ??= _loadMonitorData();
+
+    return FutureBuilder<_MonitorDataBundle>(
+      future: _monitorFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final data = snapshot.data;
+        if (data == null) {
+          return Center(
+            child: Text(
+              'Monitoring data unavailable',
+              style: GoogleFonts.manrope(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF64748B),
+              ),
+            ),
+          );
+        }
+
+        final floors = data.floors;
+        final floorIndex = floors.isEmpty
+            ? 0
+            : _selectedMonitorFloorIndex.clamp(0, floors.length - 1);
+        final currentFloor = floors.isEmpty ? null : floors[floorIndex];
+
+        final selectedCode = _selectedMonitorChariotCode ?? '__ALL__';
+        final selectedChariot = _selectedMonitorChariotCode == null
+            ? null
+            : data.chariots
+                .where((chariot) => chariot.code == _selectedMonitorChariotCode)
+                .cast<_MonitorChariotData?>()
+                .firstWhere(
+                  (value) => value != null,
+                  orElse: () => null,
+                );
+
+        final filteredOrders = data.orders.where((order) {
+          return switch (_monitorOrderFilter) {
+            MonitorOrderFilter.all => true,
+            MonitorOrderFilter.pending =>
+              order.status == MonitorOrderStatus.pending,
+            MonitorOrderFilter.inProgress =>
+              order.status == MonitorOrderStatus.inProgress,
+            MonitorOrderFilter.complete =>
+              order.status == MonitorOrderStatus.complete,
+            MonitorOrderFilter.reported =>
+              order.status == MonitorOrderStatus.reported,
+          };
+        }).toList();
+
+        final chariotsOnFloor = currentFloor == null
+            ? <_MonitorChariotData>[]
+            : data.chariots
+                .where((chariot) => chariot.floorLevel == currentFloor.level)
+                .toList();
+
+        return RefreshIndicator(
+          onRefresh: () async {
+            await _loadDashboardData();
+            if (!mounted) return;
+            setState(() {
+              _monitorFuture = _loadMonitorData();
+            });
+          },
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Monitoring',
+                      style: GoogleFonts.manrope(
+                        fontSize: 44 * 0.75,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: selectedCode,
+                          icon: const Icon(
+                            Icons.keyboard_arrow_down,
+                            color: Color(0xFF64748B),
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          items: [
+                            DropdownMenuItem<String>(
+                              value: '__ALL__',
+                              child: Text(
+                                'Select Chariot',
+                                style: GoogleFonts.manrope(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: const Color(0xFF334155),
+                                ),
+                              ),
+                            ),
+                            ...data.chariots.map(
+                              (chariot) => DropdownMenuItem<String>(
+                                value: chariot.code,
+                                child: Text(
+                                  'Vehicle: ${chariot.code}',
+                                  style: GoogleFonts.manrope(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: const Color(0xFF334155),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setState(() {
+                              _selectedMonitorChariotCode =
+                                  value == '__ALL__' ? null : value;
+
+                              if (_selectedMonitorChariotCode != null) {
+                                final chosen = data.chariots.firstWhere(
+                                  (chariot) =>
+                                      chariot.code == _selectedMonitorChariotCode,
+                                  orElse: () => data.chariots.first,
+                                );
+                                final matchedFloor = floors.indexWhere(
+                                  (floor) => floor.level == chosen.floorLevel,
+                                );
+                                if (matchedFloor >= 0) {
+                                  _selectedMonitorFloorIndex = matchedFloor;
+                                }
+                              }
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Warehouse Map • ${data.activeWarehouseLabel}',
+                        style: GoogleFonts.manrope(
+                          fontSize: 20 * 0.75,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF74839A),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: _showWarehouseLegend,
+                        child: const Icon(
+                          Icons.info_outline,
+                          color: Color(0xFF00C2EB),
+                          size: 22,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (currentFloor != null)
+                  _buildWarehouseMapCard(
+                    floor: currentFloor,
+                    chariotsOnFloor: chariotsOnFloor,
+                    highlightedChariotCode: _selectedMonitorChariotCode,
+                  )
+                else
+                  _buildEmptyState(textTheme, 'No floor structure found.'),
+                const SizedBox(height: 16),
+                if (floors.length > 1)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        onPressed: floorIndex > 0
+                            ? () => setState(() => _selectedMonitorFloorIndex--)
+                            : null,
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      Text(
+                        currentFloor?.label ?? 'Floor',
+                        style: GoogleFonts.manrope(
+                          fontSize: 20 * 0.75,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFF74839A),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: floorIndex < floors.length - 1
+                            ? () => setState(() => _selectedMonitorFloorIndex++)
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  )
+                else if (currentFloor != null)
+                  Center(
+                    child: Text(
+                      currentFloor.label,
+                      style: GoogleFonts.manrope(
+                        fontSize: 20 * 0.75,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF74839A),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                if (floors.length > 1)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(floors.length, (index) {
+                      final active = index == floorIndex;
+                      return Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 5),
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: active
+                              ? const Color(0xFFB7C2D0)
+                              : const Color(0xFFD8E0EA),
+                          shape: BoxShape.circle,
+                        ),
+                      );
+                    }),
+                  ),
+                if (selectedChariot != null) ...[
+                  const SizedBox(height: 16),
+                  _buildSelectedChariotCard(selectedChariot),
+                ],
+                const SizedBox(height: 22),
+                Text(
+                  'All Orders',
+                  style: GoogleFonts.manrope(
+                    fontSize: 44 * 0.75,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: MonitorOrderFilter.values.map((filter) {
+                      final isSelected = _monitorOrderFilter == filter;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 10),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(28),
+                          onTap: () {
+                            setState(() {
+                              _monitorOrderFilter = filter;
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? const Color(0xFF004C5C)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(28),
+                              border: Border.all(
+                                color: const Color(0xFF004C5C),
+                                width: 2,
+                              ),
+                            ),
+                            child: Text(
+                              filter.label,
+                              style: GoogleFonts.manrope(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: isSelected
+                                    ? Colors.white
+                                    : const Color(0xFF004C5C),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (filteredOrders.isEmpty)
+                  _buildEmptyState(textTheme, 'No orders found for this filter.')
+                else
+                  ...filteredOrders.map(
+                    (order) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _buildMonitorOrderCard(order),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildWarehouseMapCard({
+    required _MonitorFloorData floor,
+    required List<_MonitorChariotData> chariotsOnFloor,
+    String? highlightedChariotCode,
+  }) {
+    final selected = highlightedChariotCode == null
+        ? null
+        : chariotsOnFloor
+            .where((entry) => entry.code == highlightedChariotCode)
+            .cast<_MonitorChariotData?>()
+            .firstWhere((value) => value != null, orElse: () => null);
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFD7DEE8),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: AspectRatio(
+        aspectRatio: floor.columns / floor.rows,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final cellWidth = constraints.maxWidth / floor.columns;
+            final cellHeight = constraints.maxHeight / floor.rows;
+
+            return Stack(
+              children: [
+                GridView.builder(
+                  itemCount: floor.cells.length,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: floor.columns,
+                    childAspectRatio: cellWidth / cellHeight,
+                    crossAxisSpacing: 3,
+                    mainAxisSpacing: 3,
+                  ),
+                  itemBuilder: (context, index) {
+                    final cell = floor.cells[index];
+                    return DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: cell.color,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    );
+                  },
+                ),
+                if (selected != null && selected.path.length > 1)
+                  IgnorePointer(
+                    child: CustomPaint(
+                      size: Size(constraints.maxWidth, constraints.maxHeight),
+                      painter: _MonitorPathPainter(
+                        path: selected.path,
+                        rows: floor.rows,
+                        columns: floor.columns,
+                      ),
+                    ),
+                  ),
+                ...chariotsOnFloor.map((chariot) {
+                    final left = ((chariot.column - 1) * cellWidth)
+                      .clamp(0, constraints.maxWidth - 18)
+                      .toDouble();
+                    final top = ((chariot.row - 1) * cellHeight)
+                      .clamp(0, constraints.maxHeight - 18)
+                      .toDouble();
+                  final isActive = chariot.active;
+                  final isSelected = highlightedChariotCode == chariot.code;
+
+                  return Positioned(
+                    left: left,
+                    top: top,
+                    child: GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _selectedMonitorChariotCode = chariot.code;
+                        });
+                      },
+                      child: Container(
+                        width: isSelected ? 20 : 18,
+                        height: isSelected ? 20 : 18,
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFFA3A3A3),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: isSelected ? const Color(0xFF004C5C) : Colors.white,
+                            width: isSelected ? 3 : 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSelectedChariotCard(_MonitorChariotData chariot) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Chariot ${chariot.code}',
+            style: GoogleFonts.manrope(
+              fontSize: 20 * 0.75,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF0F172A),
+            ),
+          ),
+          const SizedBox(height: 14),
+          _monitorInfoRow(Icons.person_outline, 'Employee', chariot.employeeName),
+          _monitorInfoRow(Icons.inventory_2_outlined, 'Transfer ID', chariot.transferId),
+          _monitorInfoRow(Icons.location_on_outlined, 'Location', chariot.locationLabel),
+          if (chariot.startedAt != null)
+            _monitorInfoRow(Icons.schedule, 'Started', _minutesAgoLabel(chariot.startedAt!)),
+          _monitorInfoRow(
+            Icons.near_me_outlined,
+            'Last Known Position',
+            chariot.lastKnownPosition,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _monitorInfoRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: const Color(0xFF3F8DA8)),
+          const SizedBox(width: 10),
+          Text(
+            '$label: ',
+            style: GoogleFonts.manrope(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: const Color(0xFF334155),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: GoogleFonts.manrope(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFF0F172A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMonitorOrderCard(_MonitorOrderData order) {
+    final statusColor = order.status.color;
+    final isExpanded = _expandedMonitorOrderIds.contains(order.id);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          onExpansionChanged: (expanded) {
+            setState(() {
+              if (expanded) {
+                _expandedMonitorOrderIds.add(order.id);
+              } else {
+                _expandedMonitorOrderIds.remove(order.id);
+              }
+            });
+          },
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          leading: Icon(order.icon, color: statusColor, size: 24),
+          title: Text(
+            '${order.title} - ${order.displayId}',
+            style: GoogleFonts.manrope(
+              fontSize: 18 * 0.75,
+              fontWeight: FontWeight.w700,
+              color: const Color(0xFF334155),
+            ),
+          ),
+          trailing: Icon(
+            isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+            color: const Color(0xFF94A3B8),
+          ),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Employee Username: ${order.employeeName}',
+                style: GoogleFonts.manrope(
+                  fontSize: 16 * 0.75,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF8A9AAE),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Warehouse: ${order.warehouseLabel}',
+                style: GoogleFonts.manrope(
+                  fontSize: 16 * 0.75,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF8A9AAE),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Product:',
+                    style: GoogleFonts.manrope(
+                      fontSize: 16 * 0.75,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF8A9AAE),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    'Quantity:',
+                    style: GoogleFonts.manrope(
+                      fontSize: 16 * 0.75,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF8A9AAE),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ...order.products.map(
+              (entry) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        entry.product,
+                        style: GoogleFonts.manrope(
+                          fontSize: 16 * 0.75,
+                          fontWeight: FontWeight.w500,
+                          color: const Color(0xFF8A9AAE),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        entry.quantity.toString(),
+                        style: GoogleFonts.manrope(
+                          fontSize: 16 * 0.75,
+                          fontWeight: FontWeight.w500,
+                          color: const Color(0xFF8A9AAE),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _ensureMonitorDemoDataIfEmpty() async {
+    final floorCount = await _isar.floorCollections.where().count();
+    final sectionCount = await _isar.sectionCollections.where().count();
+    final slotCount = await _isar.slotCollections.where().count();
+    final locationCount = await _isar.locationCollections.where().count();
+    final chariotCount = await _isar.chariotCollections.where().count();
+    final assignmentCount = await _isar.chariotAssignmentCollections.where().count();
+    final orderCount =
+        await _isar.bonCommandeCollections.where().count() +
+        await _isar.bonReplenishmentCollections.where().count() +
+        await _isar.bonPickingCollections.where().count() +
+        await _isar.bonLivraisonCollections.where().count() +
+        await _isar.employeeTaskCollections.where().count();
+
+    final hasCompleteStructure =
+      floorCount > 0 && sectionCount > 0 && slotCount > 0 && locationCount > 0;
+    final hasVehicles = chariotCount > 0 && assignmentCount > 0;
+    final hasOrders = orderCount > 0;
+
+    if (hasCompleteStructure && hasVehicles && hasOrders) return;
+
+    final existingFloors = await _isar.floorCollections.where().findAll();
+    final hasDemoSeed = existingFloors.any((floor) => floor.backendId == 'demo-floor-0');
+    if (hasDemoSeed) return;
+
+    final now = DateTime.now();
+    final supervisor = await _isar.userCollections.where().findFirst();
+    final warehouseId =
+        (supervisor?.warehouseId != null && supervisor!.warehouseId!.isNotEmpty)
+        ? supervisor.warehouseId!
+        : 'demo-warehouse-1';
+
+    await _isar.writeTxn(() async {
+      final employeeOne = UserCollection.create(
+        backendId: 'demo-emp-1',
+        fullName: 'Yassine Karim',
+        email: 'demo.emp1.monitor@mobai.local',
+        role: UserRole.employee,
+        warehouseId: warehouseId,
+        createdAt: now,
+      );
+
+      final employeeTwo = UserCollection.create(
+        backendId: 'demo-emp-2',
+        fullName: 'Meryem El Idrissi',
+        email: 'demo.emp2.monitor@mobai.local',
+        role: UserRole.employee,
+        warehouseId: warehouseId,
+        createdAt: now,
+      );
+
+      final employeeThree = UserCollection.create(
+        backendId: 'demo-emp-3',
+        fullName: 'Anas Boulahcen',
+        email: 'demo.emp3.monitor@mobai.local',
+        role: UserRole.employee,
+        warehouseId: warehouseId,
+        createdAt: now,
+      );
+
+      await _isar.userCollections.putAll([employeeOne, employeeTwo, employeeThree]);
+
+      final zones = [
+        ZoneCollection.create(
+          backendId: 'demo-zone-receiving',
+          warehouseId: warehouseId,
+          name: 'Receiving Zone',
+          type: ZoneType.receiving,
+          createdAt: now,
+        ),
+        ZoneCollection.create(
+          backendId: 'demo-zone-vrac',
+          warehouseId: warehouseId,
+          name: 'VRAC Zone',
+          type: ZoneType.vrac,
+          createdAt: now,
+        ),
+        ZoneCollection.create(
+          backendId: 'demo-zone-picking',
+          warehouseId: warehouseId,
+          name: 'Picking Zone',
+          type: ZoneType.picking,
+          createdAt: now,
+        ),
+        ZoneCollection.create(
+          backendId: 'demo-zone-expedition',
+          warehouseId: warehouseId,
+          name: 'Expedition Zone',
+          type: ZoneType.expedition,
+          createdAt: now,
+        ),
+      ];
+      await _isar.zoneCollections.putAll(zones);
+
+      final floors = [
+        FloorCollection.create(
+          backendId: 'demo-floor-0',
+          warehouseId: warehouseId,
+          levelNumber: 0,
+          floorType: FloorType.ground,
+          matrixRows: 16,
+          matrixColumns: 16,
+          description: 'Ground floor for monitoring demo',
+          createdAt: now,
+        ),
+        FloorCollection.create(
+          backendId: 'demo-floor-2',
+          warehouseId: warehouseId,
+          levelNumber: 2,
+          floorType: FloorType.storage,
+          matrixRows: 16,
+          matrixColumns: 16,
+          description: 'Storage floor for monitoring demo',
+          createdAt: now,
+        ),
+      ];
+      await _isar.floorCollections.putAll(floors);
+
+      final sections = [
+        SectionCollection.create(
+          backendId: 'demo-sec-gf-picking',
+          floorId: 'demo-floor-0',
+          sectionType: SectionType.picking,
+          name: 'Ground Picking',
+          startRow: 1,
+          endRow: 16,
+          startColumn: 1,
+          endColumn: 10,
+          createdAt: now,
+        ),
+        SectionCollection.create(
+          backendId: 'demo-sec-gf-exp1',
+          floorId: 'demo-floor-0',
+          sectionType: SectionType.expedition1,
+          name: 'Expedition 1',
+          startRow: 5,
+          endRow: 12,
+          startColumn: 13,
+          endColumn: 16,
+          createdAt: now,
+        ),
+        SectionCollection.create(
+          backendId: 'demo-sec-gf-mc1',
+          floorId: 'demo-floor-0',
+          sectionType: SectionType.monteCharge1,
+          name: 'Goods Lift 1',
+          startRow: 2,
+          endRow: 3,
+          startColumn: 11,
+          endColumn: 12,
+          createdAt: now,
+        ),
+        SectionCollection.create(
+          backendId: 'demo-sec-gf-mc2',
+          floorId: 'demo-floor-0',
+          sectionType: SectionType.monteCharge2,
+          name: 'Goods Lift 2',
+          startRow: 1,
+          endRow: 2,
+          startColumn: 11,
+          endColumn: 12,
+          createdAt: now,
+        ),
+        SectionCollection.create(
+          backendId: 'demo-sec-f2-palette',
+          floorId: 'demo-floor-2',
+          sectionType: SectionType.paletteSlots,
+          name: 'Palette Slots',
+          startRow: 1,
+          endRow: 16,
+          startColumn: 1,
+          endColumn: 12,
+          createdAt: now,
+        ),
+        SectionCollection.create(
+          backendId: 'demo-sec-f2-route',
+          floorId: 'demo-floor-2',
+          sectionType: SectionType.routeSlots,
+          name: 'Route Slots',
+          startRow: 1,
+          endRow: 16,
+          startColumn: 13,
+          endColumn: 16,
+          createdAt: now,
+        ),
+      ];
+      await _isar.sectionCollections.putAll(sections);
+
+      final slots = [
+        SlotCollection.create(
+          backendId: 'demo-slot-gf-r06-c06',
+          floorId: 'demo-floor-0',
+          sectionId: 'demo-sec-gf-picking',
+          row: 6,
+          column: 6,
+          code: 'GF-R06-C06',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-gf-r08-c10',
+          floorId: 'demo-floor-0',
+          sectionId: 'demo-sec-gf-picking',
+          row: 8,
+          column: 10,
+          code: 'GF-R08-C10',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-gf-r10-c14',
+          floorId: 'demo-floor-0',
+          sectionId: 'demo-sec-gf-exp1',
+          row: 10,
+          column: 14,
+          code: 'GF-R10-C14',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-gf-r11-c15',
+          floorId: 'demo-floor-0',
+          sectionId: 'demo-sec-gf-exp1',
+          row: 11,
+          column: 15,
+          code: 'GF-R11-C15',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-f2-r04-c04',
+          floorId: 'demo-floor-2',
+          sectionId: 'demo-sec-f2-palette',
+          row: 4,
+          column: 4,
+          code: 'SF2-R04-C04',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-f2-r07-c08',
+          floorId: 'demo-floor-2',
+          sectionId: 'demo-sec-f2-palette',
+          row: 7,
+          column: 8,
+          code: 'SF2-R07-C08',
+          isStorage: true,
+          createdAt: now,
+        ),
+        SlotCollection.create(
+          backendId: 'demo-slot-f2-r09-c10',
+          floorId: 'demo-floor-2',
+          sectionId: 'demo-sec-f2-palette',
+          row: 9,
+          column: 10,
+          code: 'SF2-R09-C10',
+          isStorage: true,
+          createdAt: now,
+        ),
+      ];
+      await _isar.slotCollections.putAll(slots);
+
+      final locations = [
+        LocationCollection.create(
+          backendId: 'demo-loc-gf-0606',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-0',
+          zoneId: 'demo-zone-picking',
+          slotId: 'demo-slot-gf-r06-c06',
+          code: 'B7-0A-06-06',
+          status: LocationStatus.occupied,
+          currentCapacityUsed: 1.0,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-gf-0810',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-0',
+          zoneId: 'demo-zone-picking',
+          slotId: 'demo-slot-gf-r08-c10',
+          code: 'B7-0A-08-10',
+          status: LocationStatus.assigned,
+          reservedCapacity: 0.5,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-gf-1014',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-0',
+          zoneId: 'demo-zone-expedition',
+          slotId: 'demo-slot-gf-r10-c14',
+          code: 'B7-EXP-10-14',
+          status: LocationStatus.free,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-gf-1115',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-0',
+          zoneId: 'demo-zone-expedition',
+          slotId: 'demo-slot-gf-r11-c15',
+          code: 'B7-EXP-11-15',
+          status: LocationStatus.occupied,
+          currentCapacityUsed: 0.8,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-f2-0404',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-2',
+          zoneId: 'demo-zone-vrac',
+          slotId: 'demo-slot-f2-r04-c04',
+          code: 'B7-N2-C04',
+          status: LocationStatus.occupied,
+          currentCapacityUsed: 1.1,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-f2-0708',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-2',
+          zoneId: 'demo-zone-vrac',
+          slotId: 'demo-slot-f2-r07-c08',
+          code: 'B7-N2-C08',
+          status: LocationStatus.assigned,
+          reservedCapacity: 0.7,
+          createdAt: now,
+        ),
+        LocationCollection.create(
+          backendId: 'demo-loc-f2-0910',
+          warehouseId: warehouseId,
+          floorId: 'demo-floor-2',
+          zoneId: 'demo-zone-vrac',
+          slotId: 'demo-slot-f2-r09-c10',
+          code: 'B7-N2-C10',
+          status: LocationStatus.free,
+          createdAt: now,
+        ),
+      ];
+      await _isar.locationCollections.putAll(locations);
+
+      final skus = [
+        SKUCollection.create(
+          backendId: 'demo-sku-1',
+          skuCode: 'SKU-BULK-01',
+          name: 'Organize bulk storage',
+          createdAt: now,
+        ),
+        SKUCollection.create(
+          backendId: 'demo-sku-2',
+          skuCode: 'SKU-TRF-02',
+          name: 'Transfer pallet',
+          createdAt: now,
+        ),
+        SKUCollection.create(
+          backendId: 'demo-sku-3',
+          skuCode: 'SKU-DLV-03',
+          name: 'Delivery package',
+          createdAt: now,
+        ),
+      ];
+      await _isar.sKUCollections.putAll(skus);
+
+      final commandOrder = BonCommandeCollection.create(
+        backendId: 'demo-cmd-9CB218F5',
+        warehouseId: warehouseId,
+        employeeId: 'demo-emp-2',
+        status: BonCommandeStatus.pending,
+        totalQuantityExpected: 100,
+        totalQuantityReceived: 0,
+        createdAt: now.subtract(const Duration(minutes:26)),
+      );
+      final transferOrder = BonReplenishmentCollection.create(
+        backendId: 'demo-repl-05F62ACF',
+        warehouseId: warehouseId,
+        dailyOperationId: 'demo-day-1',
+        employeeId: 'demo-emp-1',
+        status: BonReplenishmentStatus.inProgress,
+        createdAt: now.subtract(const Duration(minutes:14)),
+      );
+      final pickingOrder = BonPickingCollection.create(
+        backendId: 'demo-pick-A2719D0',
+        warehouseId: warehouseId,
+        dailyOperationId: 'demo-day-1',
+        employeeId: 'demo-emp-3',
+        status: BonPickingStatus.pending,
+        createdAt: now.subtract(const Duration(minutes:19)),
+      );
+      final deliveryOrder = BonLivraisonCollection.create(
+        backendId: 'demo-delv-4C9112AB',
+        warehouseId: warehouseId,
+        dailyOperationId: 'demo-day-1',
+        deliveryId: 'DLV-4C9112AB',
+        employeeId: 'demo-emp-1',
+        status: BonLivraisonStatus.done,
+        createdAt: now.subtract(const Duration(minutes:43)),
+      );
+
+      await _isar.bonCommandeCollections.put(commandOrder);
+      await _isar.bonReplenishmentCollections.put(transferOrder);
+      await _isar.bonPickingCollections.put(pickingOrder);
+      await _isar.bonLivraisonCollections.put(deliveryOrder);
+
+      await _isar.bonCommandeItemCollections.putAll([
+        BonCommandeItemCollection.create(
+          backendId: 'demo-cmd-item-1',
+          bonCommandeId: 'demo-cmd-9CB218F5',
+          skuId: 'demo-sku-1',
+          quantityExpected: 35,
+          createdAt: now,
+        ),
+        BonCommandeItemCollection.create(
+          backendId: 'demo-cmd-item-2',
+          bonCommandeId: 'demo-cmd-9CB218F5',
+          skuId: 'demo-sku-2',
+          quantityExpected: 65,
+          createdAt: now,
+        ),
+      ]);
+
+      await _isar.bonReplenishmentItemCollections.putAll([
+        BonReplenishmentItemCollection.create(
+          backendId: 'demo-repl-item-1',
+          bonReplenishmentId: 'demo-repl-05F62ACF',
+          skuId: 'demo-sku-1',
+          fromLocationId: 'demo-loc-f2-0404',
+          toLocationId: 'demo-loc-gf-0606',
+          quantity: 35,
+          sequenceNumber: 1,
+          createdAt: now,
+        ),
+      ]);
+
+      await _isar.bonPickingItemCollections.putAll([
+        BonPickingItemCollection.create(
+          backendId: 'demo-pick-item-1',
+          bonPickingId: 'demo-pick-A2719D0',
+          skuId: 'demo-sku-2',
+          locationId: 'demo-loc-gf-0810',
+          quantity: 40,
+          sequenceNumber: 1,
+          createdAt: now,
+        ),
+        BonPickingItemCollection.create(
+          backendId: 'demo-pick-item-2',
+          bonPickingId: 'demo-pick-A2719D0',
+          skuId: 'demo-sku-3',
+          locationId: 'demo-loc-gf-1014',
+          quantity: 20,
+          sequenceNumber: 2,
+          createdAt: now,
+        ),
+      ]);
+
+      await _isar.bonLivraisonItemCollections.putAll([
+        BonLivraisonItemCollection.create(
+          backendId: 'demo-delv-item-1',
+          bonLivraisonId: 'demo-delv-4C9112AB',
+          skuId: 'demo-sku-3',
+          quantityDelivered: 20,
+          createdAt: now,
+        ),
+      ]);
+
+      final reportedTransfer = TaskReportCollection.create(
+        backendId: 'demo-report-1',
+        taskId: 'demo-repl-05F62ACF',
+        taskTitle: 'Transfer Order',
+        reportedById: 'demo-emp-1',
+        reportedByName: 'Yassine Karim',
+        supervisorId: _supervisorId,
+        supervisorName: _supervisorName,
+        issues: const ['blocked access'],
+        description: 'Aisle temporarily blocked while moving pallets.',
+        status: TaskReportStatus.pending,
+        reportedAt: now.subtract(const Duration(minutes:7)),
+      );
+      await _isar.taskReportCollections.put(reportedTransfer);
+
+      final chariots = [
+        ChariotCollection.create(
+          backendId: 'demo-chariot-c047',
+          code: 'C047',
+          name: 'Chariot C047',
+          status: ChariotStatus.assigned,
+          createdAt: now,
+        ),
+        ChariotCollection.create(
+          backendId: 'demo-chariot-c052',
+          code: 'C052',
+          name: 'Chariot C052',
+          status: ChariotStatus.assigned,
+          createdAt: now,
+        ),
+        ChariotCollection.create(
+          backendId: 'demo-chariot-c035',
+          code: 'C035',
+          name: 'Chariot C035',
+          status: ChariotStatus.available,
+          createdAt: now,
+        ),
+        ChariotCollection.create(
+          backendId: 'demo-chariot-c078',
+          code: 'C078',
+          name: 'Chariot C078',
+          status: ChariotStatus.available,
+          createdAt: now,
+        ),
+      ];
+      await _isar.chariotCollections.putAll(chariots);
+
+      final assignments = [
+        ChariotAssignmentCollection.create(
+          backendId: 'demo-assignment-1',
+          chariotId: 'demo-chariot-c047',
+          assignedToUserId: 'demo-emp-1',
+          operationType: ChariotOperationType.replenishment,
+          referenceDocumentId: 'demo-repl-05F62ACF',
+          assignedAt: now.subtract(const Duration(minutes:14)),
+        ),
+        ChariotAssignmentCollection.create(
+          backendId: 'demo-assignment-2',
+          chariotId: 'demo-chariot-c052',
+          assignedToUserId: 'demo-emp-3',
+          operationType: ChariotOperationType.picking,
+          referenceDocumentId: 'demo-pick-A2719D0',
+          assignedAt: now.subtract(const Duration(minutes:9)),
+        ),
+        ChariotAssignmentCollection.create(
+          backendId: 'demo-assignment-3',
+          chariotId: 'demo-chariot-c035',
+          assignedToUserId: 'demo-emp-2',
+          operationType: ChariotOperationType.delivery,
+          referenceDocumentId: 'demo-delv-4C9112AB',
+          assignedAt: now.subtract(const Duration(minutes:55)),
+          releasedAt: now.subtract(const Duration(minutes:10)),
+        ),
+      ];
+      await _isar.chariotAssignmentCollections.putAll(assignments);
+
+      final extraTask = EmployeeTaskCollection.create(
+        backendId: 'demo-task-transfer-1',
+        assignedToUserId: 'demo-emp-2',
+        assignedByUserId: supervisor?.backendId,
+        title: 'Transfer emergency pallets',
+        taskType: EmployeeTaskType.storage,
+        status: EmployeeTaskStatus.completed,
+        warehouseId: warehouseId,
+        itemsCount: 12,
+        createdAt: now.subtract(const Duration(minutes:72)),
+      );
+      await _isar.employeeTaskCollections.put(extraTask);
+    });
+  }
+
+  Future<_MonitorDataBundle> _loadMonitorData() async {
+    final remoteFloorLayout = await _loadAdminConfiguredFloors();
+
+    final warehouses = await _isar.warehouseCollections.where().findAll();
+    final floors = await _isar.floorCollections.where().findAll();
+    final sections = await _isar.sectionCollections.where().findAll();
+    final slots = await _isar.slotCollections.where().findAll();
+    final locations = await _isar.locationCollections.where().findAll();
+    final zones = await _isar.zoneCollections.where().findAll();
+    final chariots = await _isar.chariotCollections.where().findAll();
+    final assignments = await _isar.chariotAssignmentCollections.where().findAll();
+
+    final users = await _isar.userCollections.where().findAll();
+    final skus = await _isar.sKUCollections.where().findAll();
+    final reports = await _isar.taskReportCollections.where().findAll();
+
+    final commandes = await _isar.bonCommandeCollections.where().findAll();
+    final commandeItems = await _isar.bonCommandeItemCollections.where().findAll();
+    final replenishments = await _isar.bonReplenishmentCollections.where().findAll();
+    final replenishmentItems = await _isar.bonReplenishmentItemCollections.where().findAll();
+    final pickings = await _isar.bonPickingCollections.where().findAll();
+    final pickingItems = await _isar.bonPickingItemCollections.where().findAll();
+    final livraisons = await _isar.bonLivraisonCollections.where().findAll();
+    final livraisonItems = await _isar.bonLivraisonItemCollections.where().findAll();
+    final employeeTasks = await _isar.employeeTaskCollections.where().findAll();
+
+    bool idMatches(String? value, {required int localId, String? backendId}) {
+      if (value == null || value.isEmpty) return false;
+      return value == localId.toString() || (backendId != null && value == backendId);
+    }
+
+    String compactId(String? backendId, int localId) {
+      if (backendId != null && backendId.isNotEmpty) {
+        return backendId.split('-').first.toUpperCase();
+      }
+      return localId.toString();
+    }
+
+    final userMap = <String, String>{};
+    for (final user in users) {
+      userMap[user.id.toString()] = user.fullName;
+      if (user.backendId != null && user.backendId!.isNotEmpty) {
+        userMap[user.backendId!] = user.fullName;
+      }
+    }
+
+    final warehouseNameMap = <String, String>{};
+    for (final warehouse in warehouses) {
+      warehouseNameMap[warehouse.id.toString()] = warehouse.name;
+      if (warehouse.backendId != null && warehouse.backendId!.isNotEmpty) {
+        warehouseNameMap[warehouse.backendId!] = warehouse.name;
+      }
+      warehouseNameMap[warehouse.code] = warehouse.name;
+    }
+
+    String? tryResolveWarehouseName(String? warehouseId) {
+      if (warehouseId == null || warehouseId.isEmpty) return null;
+      final direct = warehouseNameMap[warehouseId];
+      if (direct != null && direct.trim().isNotEmpty) return direct;
+
+      final normalized = warehouseId.trim();
+      final caseInsensitive = warehouseNameMap.entries
+          .where((entry) => entry.key.toLowerCase() == normalized.toLowerCase())
+          .map((entry) => entry.value)
+          .cast<String?>()
+          .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null);
+      return caseInsensitive;
+    }
+
+    String resolveWarehouseName(String? warehouseId) {
+      return tryResolveWarehouseName(warehouseId) ?? 'Unknown Warehouse';
+    }
+
+    void addWarehouseCandidate(Set<String> target, String? value) {
+      if (value == null) return;
+      final candidate = value.trim();
+      if (candidate.isEmpty) return;
+      if (tryResolveWarehouseName(candidate) != null) return;
+      target.add(candidate);
+    }
+
+    final unresolvedWarehouseIds = <String>{};
+    addWarehouseCandidate(unresolvedWarehouseIds, _supervisorWarehouseId);
+    for (final floor in remoteFloorLayout) {
+      addWarehouseCandidate(unresolvedWarehouseIds, floor.warehouseId);
+    }
+    for (final item in commandes) {
+      addWarehouseCandidate(unresolvedWarehouseIds, item.warehouseId);
+    }
+    for (final item in replenishments) {
+      addWarehouseCandidate(unresolvedWarehouseIds, item.warehouseId);
+    }
+    for (final item in pickings) {
+      addWarehouseCandidate(unresolvedWarehouseIds, item.warehouseId);
+    }
+    for (final item in livraisons) {
+      addWarehouseCandidate(unresolvedWarehouseIds, item.warehouseId);
+    }
+    for (final task in employeeTasks) {
+      addWarehouseCandidate(unresolvedWarehouseIds, task.warehouseId);
+    }
+
+    if (_isOnline && unresolvedWarehouseIds.isNotEmpty) {
+      try {
+        final remoteWarehouses = await _warehouseRemoteDatasource.getWarehouses();
+        for (final warehouse in remoteWarehouses) {
+          if (warehouse.name.trim().isEmpty) continue;
+          warehouseNameMap[warehouse.id] = warehouse.name;
+          warehouseNameMap[warehouse.code] = warehouse.name;
+        }
+      } catch (_) {}
+    }
+
+    final skuMap = <String, String>{};
+    for (final sku in skus) {
+      skuMap[sku.id.toString()] = sku.skuCode;
+      if (sku.backendId != null && sku.backendId!.isNotEmpty) {
+        skuMap[sku.backendId!] = sku.skuCode;
+      }
+    }
+
+    final reportedTaskIds = reports
+        .where(
+          (report) =>
+              report.taskId != null &&
+              (report.status == TaskReportStatus.pending ||
+                  report.status == TaskReportStatus.acknowledged),
+        )
+        .map((entry) => entry.taskId!)
+        .toSet();
+
+    final floorData = _buildMonitorFloorsFromAdmin(remoteFloorLayout);
+    String? apiWarehouseName;
+    for (final floor in remoteFloorLayout) {
+      final candidate = floor.warehouseName?.trim();
+      if (candidate != null && candidate.isNotEmpty) {
+        apiWarehouseName = candidate;
+        break;
+      }
+    }
+
+    final localFloorWarehouseIds = floors
+      .map((floor) => floor.warehouseId)
+      .where((id) => id.isNotEmpty)
+      .toSet()
+      .toList();
+
+    final activeWarehouseNameCandidate = apiWarehouseName ??
+      tryResolveWarehouseName(_supervisorWarehouseId) ??
+      (remoteFloorLayout.isNotEmpty
+        ? tryResolveWarehouseName(remoteFloorLayout.first.warehouseId)
+        : null) ??
+      localFloorWarehouseIds
+        .map(tryResolveWarehouseName)
+        .cast<String?>()
+        .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null) ??
+      warehouses
+        .map((warehouse) => warehouse.name)
+        .cast<String?>()
+        .firstWhere((value) => value != null && value.trim().isNotEmpty, orElse: () => null);
+
+    final locationResolver = _MonitorLocationResolver(
+      floors: floors,
+      slots: slots,
+      locations: locations,
+      zones: zones,
+    );
+
+    final orders = <_MonitorOrderData>[];
+
+    for (final item in commandes) {
+      final itemRows = commandeItems
+          .where((entry) => idMatches(entry.bonCommandeId, localId: item.id, backendId: item.backendId))
+          .toList();
+
+      final location = const _MonitorResolvedLocation(
+        floorLevel: 0,
+        locationLabel: 'Ground Floor, Receiving Zone',
+        lastKnownPosition: 'Receiving Zone',
+      );
+
+      final orderStatus = reportedTaskIds.contains(item.backendId)
+          ? MonitorOrderStatus.reported
+          : switch (item.status) {
+              BonCommandeStatus.pending => MonitorOrderStatus.pending,
+              BonCommandeStatus.inProgress => MonitorOrderStatus.inProgress,
+              BonCommandeStatus.completed => MonitorOrderStatus.complete,
+            };
+      final routeNodes = _deriveMonitorRouteNodesFromNotes(
+        notes: item.notes,
+        status: orderStatus,
+      );
+
+      orders.add(
+        _MonitorOrderData(
+          id: 'commande-${item.id}',
+          title: 'Command Order',
+          displayId: compactId(item.backendId, item.id),
+          warehouseName: resolveWarehouseName(item.warehouseId),
+          employeeName: userMap[item.employeeId] ?? 'Unknown',
+          status: orderStatus,
+          products: itemRows.isEmpty
+              ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
+              : itemRows
+                  .map(
+                    (entry) => _MonitorProductLine(
+                      product: skuMap[entry.skuId] ?? entry.skuId,
+                      quantity: entry.quantityExpected,
+                    ),
+                  )
+                  .toList(),
+          floorLevel: location.floorLevel,
+          row: null,
+          column: null,
+          locationLabel: location.locationLabel,
+          lastKnownPosition: location.lastKnownPosition,
+          icon: Icons.inventory_2_outlined,
+          referenceId: item.backendId ?? item.id.toString(),
+          routeNodes: routeNodes,
+        ),
+      );
+    }
+
+    for (final item in replenishments) {
+      final itemRows = replenishmentItems
+          .where((entry) => idMatches(entry.bonReplenishmentId, localId: item.id, backendId: item.backendId))
+          .toList();
+      final location = locationResolver.resolve(itemRows.map((entry) => entry.toLocationId));
+
+      final orderStatus = reportedTaskIds.contains(item.backendId)
+          ? MonitorOrderStatus.reported
+          : switch (item.status) {
+              BonReplenishmentStatus.pending => MonitorOrderStatus.pending,
+              BonReplenishmentStatus.inProgress => MonitorOrderStatus.inProgress,
+              BonReplenishmentStatus.completed => MonitorOrderStatus.complete,
+              BonReplenishmentStatus.cancelled => MonitorOrderStatus.complete,
+            };
+      final routeNodes = _deriveMonitorRouteNodesFromNotes(
+        notes: item.notes,
+        status: orderStatus,
+      );
+
+      orders.add(
+        _MonitorOrderData(
+          id: 'replenishment-${item.id}',
+          title: 'Transfer Order',
+          displayId: compactId(item.backendId, item.id),
+          warehouseName: resolveWarehouseName(item.warehouseId),
+          employeeName: userMap[item.employeeId] ?? 'Unknown',
+          status: orderStatus,
+          products: itemRows.isEmpty
+              ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
+              : itemRows
+                  .map(
+                    (entry) => _MonitorProductLine(
+                      product: skuMap[entry.skuId] ?? entry.skuId,
+                      quantity: entry.quantity,
+                    ),
+                  )
+                  .toList(),
+          floorLevel: location.floorLevel,
+          row: location.row,
+          column: location.column,
+          locationLabel: location.locationLabel,
+          lastKnownPosition: location.lastKnownPosition,
+          icon: Icons.inventory_outlined,
+          referenceId: item.backendId ?? item.id.toString(),
+          routeNodes: routeNodes,
+        ),
+      );
+    }
+
+    for (final item in pickings) {
+      final itemRows = pickingItems
+          .where((entry) => idMatches(entry.bonPickingId, localId: item.id, backendId: item.backendId))
+          .toList();
+      final location = locationResolver.resolve(itemRows.map((entry) => entry.locationId));
+
+      final orderStatus = reportedTaskIds.contains(item.backendId)
+          ? MonitorOrderStatus.reported
+          : switch (item.status) {
+              BonPickingStatus.pending => MonitorOrderStatus.pending,
+              BonPickingStatus.inProgress => MonitorOrderStatus.inProgress,
+              BonPickingStatus.completed => MonitorOrderStatus.complete,
+              BonPickingStatus.cancelled => MonitorOrderStatus.complete,
+            };
+      final routeNodes = _deriveMonitorRouteNodesFromNotes(
+        notes: item.notes,
+        status: orderStatus,
+      );
+
+      orders.add(
+        _MonitorOrderData(
+          id: 'picking-${item.id}',
+          title: 'Picking Order',
+          displayId: compactId(item.backendId, item.id),
+          warehouseName: resolveWarehouseName(item.warehouseId),
+          employeeName: userMap[item.employeeId] ?? 'Unknown',
+          status: orderStatus,
+          products: itemRows.isEmpty
+              ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
+              : itemRows
+                  .map(
+                    (entry) => _MonitorProductLine(
+                      product: skuMap[entry.skuId] ?? entry.skuId,
+                      quantity: entry.quantity,
+                    ),
+                  )
+                  .toList(),
+          floorLevel: location.floorLevel,
+          row: location.row,
+          column: location.column,
+          locationLabel: location.locationLabel,
+          lastKnownPosition: location.lastKnownPosition,
+          icon: Icons.route_outlined,
+          referenceId: item.backendId ?? item.id.toString(),
+          routeNodes: routeNodes,
+        ),
+      );
+    }
+
+    for (final item in livraisons) {
+      final itemRows = livraisonItems
+          .where((entry) => idMatches(entry.bonLivraisonId, localId: item.id, backendId: item.backendId))
+          .toList();
+      final location = const _MonitorResolvedLocation(
+        floorLevel: 0,
+        locationLabel: 'Ground Floor, Expedition Zone',
+        lastKnownPosition: 'Expedition Zone',
+      );
+
+      final orderStatus = reportedTaskIds.contains(item.backendId)
+          ? MonitorOrderStatus.reported
+          : switch (item.status) {
+              BonLivraisonStatus.idle => MonitorOrderStatus.pending,
+              BonLivraisonStatus.inProgress => MonitorOrderStatus.inProgress,
+              BonLivraisonStatus.done => MonitorOrderStatus.complete,
+              BonLivraisonStatus.failed => MonitorOrderStatus.reported,
+            };
+      final routeNodes = _deriveMonitorRouteNodesFromNotes(
+        notes: item.notes,
+        status: orderStatus,
+      );
+
+      orders.add(
+        _MonitorOrderData(
+          id: 'livraison-${item.id}',
+          title: 'Delivery Order',
+          displayId: compactId(item.backendId, item.id),
+          warehouseName: resolveWarehouseName(item.warehouseId),
+          employeeName: userMap[item.employeeId] ?? 'Unknown',
+          status: orderStatus,
+          products: itemRows.isEmpty
+              ? [const _MonitorProductLine(product: 'SKU', quantity: 0)]
+              : itemRows
+                  .map(
+                    (entry) => _MonitorProductLine(
+                      product: skuMap[entry.skuId] ?? entry.skuId,
+                      quantity: entry.quantityDelivered,
+                    ),
+                  )
+                  .toList(),
+          floorLevel: location.floorLevel,
+          row: null,
+          column: null,
+          locationLabel: location.locationLabel,
+          lastKnownPosition: location.lastKnownPosition,
+          icon: Icons.local_shipping_outlined,
+          referenceId: item.backendId ?? item.id.toString(),
+          routeNodes: routeNodes,
+        ),
+      );
+    }
+
+    for (final task in employeeTasks) {
+      final baseStatus = switch (task.status) {
+        EmployeeTaskStatus.pending => MonitorOrderStatus.pending,
+        EmployeeTaskStatus.inProgress => MonitorOrderStatus.inProgress,
+        EmployeeTaskStatus.completed => MonitorOrderStatus.complete,
+        EmployeeTaskStatus.cancelled => MonitorOrderStatus.reported,
+      };
+      final orderStatus = reportedTaskIds.contains(task.backendId)
+          ? MonitorOrderStatus.reported
+          : baseStatus;
+      final routeNodes = _deriveMonitorRouteNodesFromNotes(
+        notes: task.notes,
+        status: orderStatus,
+      );
+
+      final title = switch (task.taskType) {
+        EmployeeTaskType.receipt => 'Command Order',
+        EmployeeTaskType.storage || EmployeeTaskType.replenishment => 'Transfer Order',
+        EmployeeTaskType.picking || EmployeeTaskType.preparation => 'Picking Order',
+        EmployeeTaskType.delivery => 'Delivery Order',
+      };
+
+      final typeIcon = switch (task.taskType) {
+        EmployeeTaskType.receipt => Icons.inventory_2_outlined,
+        EmployeeTaskType.storage || EmployeeTaskType.replenishment => Icons.inventory_outlined,
+        EmployeeTaskType.picking || EmployeeTaskType.preparation => Icons.route_outlined,
+        EmployeeTaskType.delivery => Icons.local_shipping_outlined,
+      };
+
+      orders.add(
+        _MonitorOrderData(
+          id: 'employee-${task.id}',
+          title: title,
+          displayId: compactId(task.backendId, task.id),
+          warehouseName: resolveWarehouseName(task.warehouseId),
+          employeeName: userMap[task.assignedToUserId] ?? 'Unknown',
+          status: orderStatus,
+          products: [
+            _MonitorProductLine(
+              product: task.title.isEmpty ? 'SKU' : task.title,
+              quantity: task.itemsCount,
+            ),
+          ],
+          floorLevel: 0,
+          row: null,
+          column: null,
+          locationLabel: 'Ground Floor',
+          lastKnownPosition: 'Expedition Zone',
+          icon: typeIcon,
+          referenceId: task.backendId ?? task.id.toString(),
+          routeNodes: routeNodes,
+        ),
+      );
+    }
+
+    orders.sort((a, b) => b.id.compareTo(a.id));
+
+    final activeAssignments = assignments.where((entry) => entry.isActive).toList();
+    final monitorChariots = <_MonitorChariotData>[];
+
+    for (final chariot in chariots) {
+      final assignment = activeAssignments
+          .where(
+            (entry) =>
+                idMatches(entry.chariotId, localId: chariot.id, backendId: chariot.backendId),
+          )
+          .cast<ChariotAssignmentCollection?>()
+          .firstWhere((value) => value != null, orElse: () => null);
+
+      _MonitorOrderData? linkedOrder;
+      if (assignment?.referenceDocumentId != null && assignment!.referenceDocumentId!.isNotEmpty) {
+        linkedOrder = orders
+            .where((order) =>
+                order.referenceId == assignment.referenceDocumentId ||
+                order.displayId == assignment.referenceDocumentId)
+            .cast<_MonitorOrderData?>()
+            .firstWhere((value) => value != null, orElse: () => null);
+      }
+
+      final floorLevel = linkedOrder?.floorLevel ?? 0;
+      final floorForBounds = floorData
+          .where((entry) => entry.level == floorLevel)
+          .cast<_MonitorFloorData?>()
+          .firstWhere((value) => value != null, orElse: () => floorData.isNotEmpty ? floorData.first : null);
+      final rows = floorForBounds?.rows ?? 16;
+      final cols = floorForBounds?.columns ?? 16;
+
+      final expeditionPoint = _GridPoint(
+        row: (rows - 1).clamp(1, rows),
+        column: (cols - 1).clamp(1, cols),
+      );
+
+      final baseRow = (linkedOrder?.row ?? expeditionPoint.row).clamp(1, rows);
+      final baseColumn = (linkedOrder?.column ?? expeditionPoint.column).clamp(1, cols);
+
+      final routedPath = linkedOrder == null
+          ? const <_GridPoint>[]
+          : _buildPathFromRouteNodes(
+              routeNodes: linkedOrder.routeNodes,
+              resolver: locationResolver,
+              floorLevel: floorLevel,
+              rows: rows,
+              columns: cols,
+            );
+
+      final path = routedPath.isNotEmpty
+          ? routedPath
+          : linkedOrder != null && linkedOrder.row != null && linkedOrder.column != null
+          ? _buildManhattanPath(
+              startRow: expeditionPoint.row,
+              startColumn: expeditionPoint.column,
+              endRow: baseRow,
+              endColumn: baseColumn,
+            )
+          : [
+              expeditionPoint,
+            ];
+
+      final marker = path.isNotEmpty
+          ? path.last
+          : _GridPoint(row: baseRow, column: baseColumn);
+
+      monitorChariots.add(
+        _MonitorChariotData(
+          code: '#${chariot.code}',
+          active: assignment != null,
+          floorLevel: floorLevel,
+          row: marker.row,
+          column: marker.column,
+          employeeName: linkedOrder?.employeeName ?? (assignment == null ? 'Unassigned' : (userMap[assignment.assignedToUserId] ?? 'Unknown')),
+          transferId: linkedOrder?.displayId ?? '-',
+          locationLabel: linkedOrder?.locationLabel ?? 'Floor $floorLevel, Zone #Num',
+          startedAt: assignment?.assignedAt,
+          lastKnownPosition: linkedOrder?.lastKnownPosition ?? 'Expedition Zone',
+          path: path,
+        ),
+      );
+    }
+
+    final resolvedActiveWarehouseName = activeWarehouseNameCandidate ??
+        orders
+            .map((order) => order.warehouseName)
+            .cast<String?>()
+            .firstWhere(
+              (value) =>
+                  value != null &&
+                  value.trim().isNotEmpty &&
+                  value.trim().toLowerCase() != 'unknown warehouse',
+              orElse: () => null,
+            );
+
+    return _MonitorDataBundle(
+      floors: floorData,
+      chariots: monitorChariots,
+      orders: orders,
+      activeWarehouseName: resolvedActiveWarehouseName,
+    );
+  }
+
+  List<_GridPoint> _buildManhattanPath({
+    required int startRow,
+    required int startColumn,
+    required int endRow,
+    required int endColumn,
+  }) {
+    final path = <_GridPoint>[
+      _GridPoint(row: startRow, column: startColumn),
+    ];
+
+    if (startColumn != endColumn) {
+      path.add(_GridPoint(row: startRow, column: endColumn));
+    }
+
+    if (startRow != endRow) {
+      path.add(_GridPoint(row: endRow, column: endColumn));
+    }
+
+    return path;
+  }
+
+  List<_GridPoint> _buildPathFromRouteNodes({
+    required List<String> routeNodes,
+    required _MonitorLocationResolver resolver,
+    required int floorLevel,
+    required int rows,
+    required int columns,
+  }) {
+    if (routeNodes.isEmpty) return const [];
+
+    final resolved = routeNodes
+        .map(
+          (node) => resolver.resolveRouteNodeToPoint(
+            node: node,
+            floorLevel: floorLevel,
+            rows: rows,
+            columns: columns,
+          ),
+        )
+        .whereType<_GridPoint>()
+        .toList();
+
+    if (resolved.isEmpty) return const [];
+    if (resolved.length == 1) return resolved;
+
+    final path = <_GridPoint>[];
+    for (var index = 0; index < resolved.length - 1; index++) {
+      final from = resolved[index];
+      final to = resolved[index + 1];
+      final segment = _buildManhattanPath(
+        startRow: from.row,
+        startColumn: from.column,
+        endRow: to.row,
+        endColumn: to.column,
+      );
+
+      if (segment.isEmpty) continue;
+      if (path.isEmpty) {
+        path.addAll(segment);
+      } else {
+        path.addAll(segment.skip(1));
+      }
+    }
+
+    return path.isEmpty ? resolved : path;
+  }
+
+  Future<List<FloorApiModel>> _loadAdminConfiguredFloors() async {
+    if (!_isOnline) return const [];
+
+    final localWarehouses = await _isar.warehouseCollections.where().findAll();
+
+    String? warehouseId = _supervisorWarehouseId;
+    if (warehouseId == null || warehouseId.isEmpty) {
+      if (localWarehouses.isNotEmpty) {
+        warehouseId = localWarehouses.first.backendId ?? localWarehouses.first.id.toString();
+      }
+    }
+
+    final attemptedWarehouseIds = <String>{};
+
+    Future<List<FloorApiModel>> tryLoadFloorsForWarehouse(String? id) async {
+      if (id == null || id.isEmpty || attemptedWarehouseIds.contains(id)) {
+        return const [];
+      }
+      attemptedWarehouseIds.add(id);
+      try {
+        return await _floorRemoteDatasource.getFloors(id);
+      } catch (_) {
+        return const [];
+      }
+    }
+
+    final primaryFloors = await tryLoadFloorsForWarehouse(warehouseId);
+    if (primaryFloors.isNotEmpty) return primaryFloors;
+
+    String? supervisorWarehouseName;
+    if (warehouseId != null && warehouseId.isNotEmpty) {
+      for (final local in localWarehouses) {
+        final matches = warehouseId == local.id.toString() ||
+            (local.backendId != null && warehouseId == local.backendId) ||
+            warehouseId == local.code;
+        if (!matches) continue;
+        supervisorWarehouseName = local.name;
+        break;
+      }
+    }
+
+    final prioritizedLocal = <WarehouseCollection>[];
+    final remainingLocal = <WarehouseCollection>[];
+    for (final local in localWarehouses) {
+      if (supervisorWarehouseName != null &&
+          local.name.toLowerCase() == supervisorWarehouseName.toLowerCase()) {
+        prioritizedLocal.add(local);
+      } else {
+        remainingLocal.add(local);
+      }
+    }
+
+    for (final local in [...prioritizedLocal, ...remainingLocal]) {
+      final floors = await tryLoadFloorsForWarehouse(local.backendId ?? local.id.toString());
+      if (floors.isNotEmpty) return floors;
+    }
+
+    try {
+      final remoteWarehouses = await _warehouseRemoteDatasource.getWarehouses();
+
+      final prioritizedRemote = <WarehouseApiModel>[];
+      final remainingRemote = <WarehouseApiModel>[];
+      for (final remote in remoteWarehouses) {
+        if (supervisorWarehouseName != null &&
+            remote.name.toLowerCase() == supervisorWarehouseName.toLowerCase()) {
+          prioritizedRemote.add(remote);
+        } else {
+          remainingRemote.add(remote);
+        }
+      }
+
+      for (final remote in [...prioritizedRemote, ...remainingRemote]) {
+        final floors = await tryLoadFloorsForWarehouse(remote.id);
+        if (floors.isNotEmpty) return floors;
+      }
+    } catch (_) {}
+
+    return const [];
+  }
+
+  List<_MonitorFloorData> _buildMonitorFloorsFromAdmin(List<FloorApiModel> apiFloors) {
+    if (apiFloors.isEmpty) return const [];
+
+    final entries = apiFloors.toList()..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
+
+    Color itemColor(String itemType) {
+      switch (itemType.toUpperCase()) {
+        case 'SHIPPING_AREA':
+          return const Color(0xFFCFE3B7);
+        case 'GOODS_LIFT':
+          return const Color(0xFFCDB7EA);
+        case 'LIFT':
+          return const Color(0xFFBCB9EE);
+        case 'VRAC':
+          return const Color(0xFFADE3BD);
+        case 'RACK_STORAGE':
+        case 'FLOOR_STORAGE':
+          return const Color(0xFFD6E8EF);
+        case 'OFFICE':
+        default:
+          return const Color(0xFFBAC6D6);
+      }
+    }
+
+    final monitorFloors = <_MonitorFloorData>[];
+
+    for (final floor in entries) {
+      final rows = floor.matrixRows <= 0 ? 10 : floor.matrixRows;
+      final cols = floor.matrixColumns <= 0 ? 10 : floor.matrixColumns;
+      final cells = List<_MonitorMapCell>.generate(
+        rows * cols,
+        (_) => const _MonitorMapCell(color: Color(0xFFBAC6D6)),
+      );
+
+      for (final item in floor.gridItems) {
+        final color = itemColor(item.itemType);
+        final startCol = item.x.clamp(0, cols - 1);
+        final startRow = item.y.clamp(0, rows - 1);
+        final endCol = (item.x + item.width - 1).clamp(0, cols - 1);
+        final endRow = (item.y + item.height - 1).clamp(0, rows - 1);
+
+        for (var row = startRow; row <= endRow; row++) {
+          for (var col = startCol; col <= endCol; col++) {
+            cells[row * cols + col] = _MonitorMapCell(color: color);
+          }
+        }
+      }
+
+      monitorFloors.add(
+        _MonitorFloorData(
+          level: floor.levelNumber,
+          label: floor.levelNumber == 0 ? 'Ground Floor' : 'Floor ${floor.levelNumber}',
+          rows: rows,
+          columns: cols,
+          cells: cells,
+        ),
+      );
+    }
+
+    return monitorFloors;
+  }
+
+  List<_MonitorFloorData> _buildMonitorFloors({
+    required List<FloorCollection> floors,
+    required List<SectionCollection> sections,
+    required List<SlotCollection> slots,
+    required List<LocationCollection> locations,
+  }) {
+    bool idMatches(String? value, {required int localId, String? backendId}) {
+      if (value == null || value.isEmpty) return false;
+      return value == localId.toString() || (backendId != null && value == backendId);
+    }
+
+    Color sectionColor(SectionType? sectionType) {
+      switch (sectionType) {
+        case SectionType.expedition1:
+        case SectionType.expedition2:
+          return const Color(0xFFCFE3B7);
+        case SectionType.monteCharge1:
+          return const Color(0xFFCDB7EA);
+        case SectionType.monteCharge2:
+        case SectionType.elevator:
+          return const Color(0xFFBCB9EE);
+        case SectionType.paletteSlots:
+        case SectionType.picking:
+        case SectionType.vrac:
+        case SectionType.routeSlots:
+        case SectionType.bureau:
+        case null:
+          return const Color(0xFFBAC6D6);
+      }
+    }
+
+    final floorEntries = floors.toList()..sort((a, b) => a.levelNumber.compareTo(b.levelNumber));
+
+    if (floorEntries.isEmpty) {
+      final fallbackCells = List<_MonitorMapCell>.generate(
+        16 * 16,
+        (_) => const _MonitorMapCell(color: Color(0xFFEAF1F7)),
+      );
+      return [
+        _MonitorFloorData(
+          level: 0,
+          label: 'Ground Floor',
+          rows: 16,
+          columns: 16,
+          cells: fallbackCells,
+        ),
+      ];
+    }
+
+    final slotById = <String, SlotCollection>{};
+    for (final slot in slots) {
+      slotById[slot.id.toString()] = slot;
+      if (slot.backendId != null && slot.backendId!.isNotEmpty) {
+        slotById[slot.backendId!] = slot;
+      }
+    }
+
+    final monitorFloors = <_MonitorFloorData>[];
+
+    for (final floor in floorEntries) {
+      final rows = floor.matrixRows <= 0 ? 10 : floor.matrixRows;
+      final cols = floor.matrixColumns <= 0 ? 10 : floor.matrixColumns;
+      final cells = List<_MonitorMapCell>.generate(
+        rows * cols,
+        (_) => const _MonitorMapCell(color: Color(0xFFBAC6D6)),
+      );
+
+      final floorSections = sections.where((section) {
+        return idMatches(section.floorId, localId: floor.id, backendId: floor.backendId);
+      });
+
+      for (final section in floorSections) {
+        final color = sectionColor(section.sectionType);
+        final startRow = (section.startRow - 1).clamp(0, rows - 1);
+        final endRow = (section.endRow - 1).clamp(0, rows - 1);
+        final startCol = (section.startColumn - 1).clamp(0, cols - 1);
+        final endCol = (section.endColumn - 1).clamp(0, cols - 1);
+
+        for (var row = startRow; row <= endRow; row++) {
+          for (var col = startCol; col <= endCol; col++) {
+            cells[row * cols + col] = _MonitorMapCell(color: color);
+          }
+        }
+      }
+
+      final floorLocations = locations.where((location) {
+        return idMatches(location.floorId, localId: floor.id, backendId: floor.backendId);
+      });
+
+      for (final location in floorLocations) {
+        if (location.slotId == null || location.slotId!.isEmpty) continue;
+        final slot = slotById[location.slotId!];
+        if (slot == null) continue;
+        final row = (slot.row - 1).clamp(0, rows - 1);
+        final col = (slot.column - 1).clamp(0, cols - 1);
+        final index = row * cols + col;
+
+        final color = switch (location.status) {
+          LocationStatus.free => const Color(0xFFD6E8EF),
+          LocationStatus.assigned => const Color(0xFFF1E9BF),
+          LocationStatus.occupied => const Color(0xFFADE3BD),
+        };
+
+        cells[index] = _MonitorMapCell(color: color);
+      }
+
+      monitorFloors.add(
+        _MonitorFloorData(
+          level: floor.levelNumber,
+          label: floor.levelNumber == 0 ? 'Ground Floor' : 'Floor ${floor.levelNumber}',
+          rows: rows,
+          columns: cols,
+          cells: cells,
+        ),
+      );
+    }
+
+    return monitorFloors;
+  }
+
+  String _minutesAgoLabel(DateTime value) {
+    final diff = DateTime.now().difference(value);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} mins ago';
+    if (diff.inHours < 24) return '${diff.inHours} hours ago';
+    return '${diff.inDays} days ago';
+  }
+
+  Future<void> _showWarehouseLegend() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        final entries = [
+          (const Color(0xFFEF4444), 'Active Vehicle'),
+          (const Color(0xFFA3A3A3), 'Idle Vehicle'),
+          (const Color(0xFFD6E8EF), 'Empty Rack Storage'),
+          (const Color(0xFFADE3BD), 'Occupied Rack Storage'),
+          (const Color(0xFFF1E9BF), 'Assigned Rack Storage'),
+          (const Color(0xFFCFE3B7), 'Shipping (Expedition) Area'),
+          (const Color(0xFFCDB7EA), 'Goods Lift 1'),
+          (const Color(0xFFBCB9EE), 'Goods Lift 2'),
+          (const Color(0xFFBAC6D6), 'Other'),
+        ];
+
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Warehouse Layout Map',
+                        style: GoogleFonts.manrope(
+                          fontSize: 20 * 0.75,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFF1E293B),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: Color(0xFF94A3B8)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                ...entries.map(
+                  (entry) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: entry.$1,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          entry.$2,
+                          style: GoogleFonts.manrope(
+                            fontSize: 16 * 0.75,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF334155),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1719,6 +4108,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     setState(() {
       _proposedTasks.remove(task);
+      _syncProposedPageToFiltered();
     });
 
     _addHistoryAction(
@@ -1853,11 +4243,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     setState(() {
       _reportedTasks.remove(task);
-      if (_reportedTasks.isEmpty) {
-        _currentReportedPage = 0;
-      } else {
-        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
-      }
+      _syncReportedPageToFiltered();
     });
 
     _addHistoryAction('Approved', task.code, task.type);
@@ -1873,84 +4259,345 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   Future<void> _reviewReport(_TaskCardData task) async {
     if (!task.isEmployeeReport || task.reportLocalId == null) return;
 
-    final decision = await showDialog<_ReportReviewDecision>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          'Review Report',
-          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Task ${task.code}',
-              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
-            ),
-            if (task.issues.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Issue: ${task.issues.first}',
-                style: GoogleFonts.manrope(),
-              ),
-            ],
-            if ((task.reportSuggestedSolution ?? '').trim().isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Suggested solution: ${task.reportSuggestedSolution}',
-                style: GoogleFonts.manrope(
-                  color: const Color(0xFF475569),
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.manrope(
-                color: const Color(0xFF64748B),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, _ReportReviewDecision.reject),
-            child: Text(
-              'Reject',
-              style: GoogleFonts.manrope(
-                color: Colors.red,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, _ReportReviewDecision.accept),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF3C91CC),
-              foregroundColor: Colors.white,
-            ),
-            child: Text(
-              'Accept',
-              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
-            ),
-          ),
-        ],
-      ),
-    );
+    final selection = await _showReportHandlingDialog(task);
+    if (selection == null) return;
 
-    if (decision == null) return;
-    if (decision == _ReportReviewDecision.accept) {
-      await _approveReport(task);
+    if (selection.action == _ReportHandlingAction.deleteTask) {
+      final report = await _isar.taskReportCollections.get(task.reportLocalId!);
+      if (report != null) {
+        await _sendReportHandlingToBackend(
+          report,
+          selection,
+          task,
+        );
+      }
+      await _deleteTask(task);
       return;
     }
 
-    await _rejectReport(task);
+    await _applyReportHandling(task, selection);
+  }
+
+  List<_ReportHandlingAction> _actionsForTask(_TaskCardData task) {
+    switch (task.type) {
+      case TaskType.receipt:
+        return const [
+          _ReportHandlingAction.deleteTask,
+          _ReportHandlingAction.setPending,
+          _ReportHandlingAction.newReceipt,
+        ];
+      case TaskType.storage:
+      case TaskType.picking:
+      case TaskType.delivery:
+        return const [
+          _ReportHandlingAction.deleteTask,
+          _ReportHandlingAction.setPending,
+          _ReportHandlingAction.overrideOrder,
+        ];
+    }
+  }
+
+  Future<_ReportHandlingActionSelection?> _showReportHandlingDialog(
+    _TaskCardData task,
+  ) async {
+    final availableActions = _actionsForTask(task);
+    var selectedAction = availableActions.first;
+    final locationController = TextEditingController();
+    final detailsController = TextEditingController();
+
+    return showDialog<_ReportHandlingActionSelection>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            'Handle Report',
+            style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+          ),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Task ${task.code}',
+                  style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+                ),
+                if (task.issues.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Issue: ${task.issues.first}',
+                    style: GoogleFonts.manrope(),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: availableActions
+                      .map(
+                        (action) => ChoiceChip(
+                          label: Text(action.label, style: GoogleFonts.manrope(fontWeight: FontWeight.w600)),
+                          selected: selectedAction == action,
+                          onSelected: (_) {
+                            setDialogState(() {
+                              selectedAction = action;
+                            });
+                          },
+                        ),
+                      )
+                      .toList(),
+                ),
+                if (selectedAction == _ReportHandlingAction.overrideOrder &&
+                    (task.type == TaskType.storage || task.type == TaskType.picking)) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: locationController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      labelText: task.type == TaskType.storage
+                          ? 'Upper-floor location code'
+                          : 'Ground-floor location code',
+                      hintText: task.type == TaskType.storage
+                          ? 'B7-N1-C12'
+                          : 'B7-0A-12-34',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ],
+                if (selectedAction == _ReportHandlingAction.newReceipt ||
+                    (selectedAction == _ReportHandlingAction.overrideOrder && task.type == TaskType.delivery)) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: detailsController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      labelText: selectedAction == _ReportHandlingAction.newReceipt
+                          ? 'New receipt infos'
+                          : 'Override infos',
+                      hintText: selectedAction == _ReportHandlingAction.newReceipt
+                          ? 'Ex: return damaged items, create corrected receipt'
+                          : 'Ex: corrected delivery info / notes',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(
+                'Cancel',
+                style: GoogleFonts.manrope(
+                  color: const Color(0xFF64748B),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final locationCode = locationController.text.trim().toUpperCase();
+                if (selectedAction == _ReportHandlingAction.overrideOrder &&
+                    (task.type == TaskType.storage || task.type == TaskType.picking) &&
+                    locationCode.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Location code is required for override action.')),
+                  );
+                  return;
+                }
+
+                final details = detailsController.text.trim();
+                if ((selectedAction == _ReportHandlingAction.newReceipt ||
+                        (selectedAction == _ReportHandlingAction.overrideOrder && task.type == TaskType.delivery)) &&
+                    details.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Provide required informations for this action.')),
+                  );
+                  return;
+                }
+
+                if (selectedAction == _ReportHandlingAction.overrideOrder &&
+                    (task.type == TaskType.storage || task.type == TaskType.picking)) {
+                  final normalizedCode = _normalizeLocationCode(locationCode);
+                  final overrideCategory = task.type == TaskType.storage
+                      ? _OverrideCategory.transfer
+                      : _OverrideCategory.picking;
+                  final formatError = _locationCodePatternError(
+                    normalizedCode,
+                    overrideCategory,
+                  );
+                  if (formatError != null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(formatError)),
+                    );
+                    return;
+                  }
+                }
+
+                Navigator.pop(
+                  context,
+                  _ReportHandlingActionSelection(
+                    action: selectedAction,
+                    locationCode: locationCode.isEmpty ? null : locationCode,
+                    details: details.isEmpty ? null : details,
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3C91CC),
+                foregroundColor: Colors.white,
+              ),
+              child: Text(
+                'Apply',
+                style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _applyReportHandling(
+    _TaskCardData task,
+    _ReportHandlingActionSelection selection,
+  ) async {
+    if (!task.isEmployeeReport || task.reportLocalId == null) return;
+
+    final user = await _isar.userCollections.where().findFirst();
+    final report = await _isar.taskReportCollections.get(task.reportLocalId!);
+    if (report == null) return;
+
+    String? syncStatus;
+    String? syncNotes;
+
+    await _isar.writeTxn(() async {
+      report.status = TaskReportStatus.resolved;
+      report.supervisorId = user?.backendId ?? user?.id.toString();
+      report.supervisorName = user?.fullName;
+      report.resolvedAt = DateTime.now();
+      report.supervisorNotes = selection.action.backendAction;
+      report.updatedAt = DateTime.now();
+      await _isar.taskReportCollections.put(report);
+
+      var marker = 'REPORT_HANDLED:${selection.action.backendAction}:${report.backendId ?? report.id}';
+      if (selection.locationCode != null) {
+        marker = '$marker:LOC=${selection.locationCode}';
+      }
+      if (selection.details != null && selection.details!.trim().isNotEmpty) {
+        marker = '$marker:DETAILS=${selection.details!.trim()}';
+      }
+
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonCommandeStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.idle;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'IDLE';
+          syncNotes = entity.notes;
+          await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.pending;
+          entity.notes = _appendSupervisorNote(entity.notes, marker);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(
+      task,
+      action: selection.action.syncAction,
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+        if (selection.locationCode != null) 'location_override': selection.locationCode,
+        if (selection.details != null) 'details': selection.details,
+      },
+      priority: 9,
+    );
+
+    await _sendReportHandlingToBackend(report, selection, task);
+
+    setState(() {
+      _reportedTasks.remove(task);
+      _syncReportedPageToFiltered();
+    });
+
+    _addHistoryAction(selection.action.historyLabel, task.code, task.type);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Report for ${task.code} handled (${selection.action.label})')),
+    );
+
+    await _triggerSync(showLoader: false);
+  }
+
+  Future<void> _sendReportHandlingToBackend(
+    TaskReportCollection report,
+    _ReportHandlingActionSelection selection,
+    _TaskCardData task,
+  ) async {
+    if (!_isOnline) return;
+    final reportBackendId = report.backendId;
+    if (reportBackendId == null || reportBackendId.isEmpty) return;
+
+    try {
+      await _apiClient.post(
+        '/v1/operations/task-reports/$reportBackendId/handle/',
+        data: {
+          'action': selection.action.backendAction,
+          'notes': 'Handled from supervisor dashboard (${task.code})',
+          if (selection.locationCode != null) 'location_code': selection.locationCode,
+          if (selection.details != null) 'details': selection.details,
+        },
+      );
+    } catch (_) {}
   }
 
   Future<void> _rejectReport(_TaskCardData task) async {
@@ -2028,11 +4675,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     setState(() {
       _reportedTasks.remove(task);
-      if (_reportedTasks.isEmpty) {
-        _currentReportedPage = 0;
-      } else {
-        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
-      }
+      _syncReportedPageToFiltered();
     });
 
     _addHistoryAction('Rejected', task.code, task.type);
@@ -2546,6 +5189,67 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
 enum _AIDecisionAction { approve, override }
 
+enum _ReportHandlingAction {
+  deleteTask,
+  setPending,
+  newReceipt,
+  overrideOrder,
+}
+
+extension _ReportHandlingActionUI on _ReportHandlingAction {
+  String get label {
+    switch (this) {
+      case _ReportHandlingAction.deleteTask:
+        return 'Delete';
+      case _ReportHandlingAction.setPending:
+        return 'Set Pending';
+      case _ReportHandlingAction.newReceipt:
+        return 'New Receipt';
+      case _ReportHandlingAction.overrideOrder:
+        return 'Override';
+    }
+  }
+
+  String get backendAction {
+    switch (this) {
+      case _ReportHandlingAction.deleteTask:
+        return 'DELETE_TASK';
+      case _ReportHandlingAction.setPending:
+        return 'SET_PENDING';
+      case _ReportHandlingAction.newReceipt:
+        return 'NEW_RECEIPT';
+      case _ReportHandlingAction.overrideOrder:
+        return 'OVERRIDE_ORDER';
+    }
+  }
+
+  String get syncAction {
+    switch (this) {
+      case _ReportHandlingAction.deleteTask:
+        return 'DELETED';
+      case _ReportHandlingAction.setPending:
+        return 'SET_PENDING';
+      case _ReportHandlingAction.newReceipt:
+        return 'NEW_RECEIPT';
+      case _ReportHandlingAction.overrideOrder:
+        return 'OVERRIDDEN';
+    }
+  }
+
+  String get historyLabel {
+    switch (this) {
+      case _ReportHandlingAction.deleteTask:
+        return 'Deleted';
+      case _ReportHandlingAction.setPending:
+        return 'Pending';
+      case _ReportHandlingAction.newReceipt:
+        return 'New Receipt';
+      case _ReportHandlingAction.overrideOrder:
+        return 'Overridden';
+    }
+  }
+}
+
 enum _OverrideCategory { forecasting, transfer, picking }
 
 extension _OverrideCategoryLabel on _OverrideCategory {
@@ -2562,6 +5266,18 @@ extension _OverrideCategoryLabel on _OverrideCategory {
 }
 
 enum _ReportReviewDecision { accept, reject }
+
+class _ReportHandlingActionSelection {
+  const _ReportHandlingActionSelection({
+    required this.action,
+    this.locationCode,
+    this.details,
+  });
+
+  final _ReportHandlingAction action;
+  final String? locationCode;
+  final String? details;
+}
 
 class _AIDecisionReviewResult {
   const _AIDecisionReviewResult({
@@ -2584,6 +5300,353 @@ class _EmployeeAssignmentOption {
 
   final String id;
   final String name;
+}
+
+enum MonitorOrderFilter { all, pending, inProgress, complete, reported }
+
+extension MonitorOrderFilterUI on MonitorOrderFilter {
+  String get label {
+    switch (this) {
+      case MonitorOrderFilter.all:
+        return 'All';
+      case MonitorOrderFilter.pending:
+        return 'Pending';
+      case MonitorOrderFilter.inProgress:
+        return 'In Progress';
+      case MonitorOrderFilter.complete:
+        return 'Complete';
+      case MonitorOrderFilter.reported:
+        return 'Reported';
+    }
+  }
+}
+
+enum MonitorOrderStatus { pending, inProgress, complete, reported }
+
+extension MonitorOrderStatusUI on MonitorOrderStatus {
+  Color get color {
+    switch (this) {
+      case MonitorOrderStatus.pending:
+        return const Color(0xFFF59E0B);
+      case MonitorOrderStatus.inProgress:
+        return const Color(0xFF00C2EB);
+      case MonitorOrderStatus.complete:
+        return const Color(0xFF22C55E);
+      case MonitorOrderStatus.reported:
+        return const Color(0xFFEF4444);
+    }
+  }
+}
+
+class _MonitorDataBundle {
+  const _MonitorDataBundle({
+    required this.floors,
+    required this.chariots,
+    required this.orders,
+    this.activeWarehouseName,
+  });
+
+  final List<_MonitorFloorData> floors;
+  final List<_MonitorChariotData> chariots;
+  final List<_MonitorOrderData> orders;
+  final String? activeWarehouseName;
+
+  String get activeWarehouseLabel {
+    final value = activeWarehouseName?.trim();
+    if (value == null || value.isEmpty) return 'Unknown Warehouse';
+    return value;
+  }
+}
+
+class _MonitorFloorData {
+  const _MonitorFloorData({
+    required this.level,
+    required this.label,
+    required this.rows,
+    required this.columns,
+    required this.cells,
+  });
+
+  final int level;
+  final String label;
+  final int rows;
+  final int columns;
+  final List<_MonitorMapCell> cells;
+}
+
+class _MonitorMapCell {
+  const _MonitorMapCell({required this.color});
+
+  final Color color;
+}
+
+class _GridPoint {
+  const _GridPoint({required this.row, required this.column});
+
+  final int row;
+  final int column;
+}
+
+class _MonitorPathPainter extends CustomPainter {
+  const _MonitorPathPainter({
+    required this.path,
+    required this.rows,
+    required this.columns,
+  });
+
+  final List<_GridPoint> path;
+  final int rows;
+  final int columns;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (path.length < 2) return;
+
+    final paint = Paint()
+      ..color = const Color(0xFFEF4444)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+
+    final cellWidth = size.width / columns;
+    final cellHeight = size.height / rows;
+
+    final p = Path();
+    final first = path.first;
+    p.moveTo((first.column - 0.5) * cellWidth, (first.row - 0.5) * cellHeight);
+
+    for (final point in path.skip(1)) {
+      p.lineTo((point.column - 0.5) * cellWidth, (point.row - 0.5) * cellHeight);
+    }
+
+    canvas.drawPath(p, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MonitorPathPainter oldDelegate) {
+    return oldDelegate.path != path || oldDelegate.rows != rows || oldDelegate.columns != columns;
+  }
+}
+
+class _MonitorChariotData {
+  const _MonitorChariotData({
+    required this.code,
+    required this.active,
+    required this.floorLevel,
+    required this.row,
+    required this.column,
+    required this.employeeName,
+    required this.transferId,
+    required this.locationLabel,
+    required this.startedAt,
+    required this.lastKnownPosition,
+    required this.path,
+  });
+
+  final String code;
+  final bool active;
+  final int floorLevel;
+  final int row;
+  final int column;
+  final String employeeName;
+  final String transferId;
+  final String locationLabel;
+  final DateTime? startedAt;
+  final String lastKnownPosition;
+  final List<_GridPoint> path;
+}
+
+class _MonitorProductLine {
+  const _MonitorProductLine({required this.product, required this.quantity});
+
+  final String product;
+  final int quantity;
+}
+
+class _MonitorOrderData {
+  const _MonitorOrderData({
+    required this.id,
+    required this.title,
+    required this.displayId,
+    this.warehouseName,
+    required this.employeeName,
+    required this.status,
+    required this.products,
+    required this.floorLevel,
+    required this.row,
+    required this.column,
+    required this.locationLabel,
+    required this.lastKnownPosition,
+    required this.icon,
+    required this.referenceId,
+    this.routeNodes = const [],
+  });
+
+  final String id;
+  final String title;
+  final String displayId;
+  final String? warehouseName;
+  final String employeeName;
+  final MonitorOrderStatus status;
+  final List<_MonitorProductLine> products;
+  final int floorLevel;
+  final int? row;
+  final int? column;
+  final String locationLabel;
+  final String lastKnownPosition;
+  final IconData icon;
+  final String referenceId;
+  final List<String> routeNodes;
+
+  String get warehouseLabel {
+    final value = warehouseName?.trim();
+    if (value == null || value.isEmpty) return 'Unknown Warehouse';
+    return value;
+  }
+}
+
+class _MonitorResolvedLocation {
+  const _MonitorResolvedLocation({
+    required this.floorLevel,
+    required this.locationLabel,
+    required this.lastKnownPosition,
+    this.row,
+    this.column,
+  });
+
+  final int floorLevel;
+  final int? row;
+  final int? column;
+  final String locationLabel;
+  final String lastKnownPosition;
+}
+
+class _MonitorLocationResolver {
+  _MonitorLocationResolver({
+    required List<FloorCollection> floors,
+    required List<SlotCollection> slots,
+    required List<LocationCollection> locations,
+    required List<ZoneCollection> zones,
+  }) {
+    for (final floor in floors) {
+      _floorByKey[floor.id.toString()] = floor;
+      if (floor.backendId != null && floor.backendId!.isNotEmpty) {
+        _floorByKey[floor.backendId!] = floor;
+      }
+    }
+
+    for (final slot in slots) {
+      _slotByKey[slot.id.toString()] = slot;
+      if (slot.backendId != null && slot.backendId!.isNotEmpty) {
+        _slotByKey[slot.backendId!] = slot;
+      }
+    }
+
+    for (final location in locations) {
+      _locationByKey[location.id.toString()] = location;
+      if (location.backendId != null && location.backendId!.isNotEmpty) {
+        _locationByKey[location.backendId!] = location;
+      }
+      _locationByCode[_normalizeCode(location.code)] = location;
+    }
+
+    for (final zone in zones) {
+      _zoneByKey[zone.id.toString()] = zone;
+      if (zone.backendId != null && zone.backendId!.isNotEmpty) {
+        _zoneByKey[zone.backendId!] = zone;
+      }
+    }
+  }
+
+  final Map<String, FloorCollection> _floorByKey = {};
+  final Map<String, SlotCollection> _slotByKey = {};
+  final Map<String, LocationCollection> _locationByKey = {};
+  final Map<String, ZoneCollection> _zoneByKey = {};
+  final Map<String, LocationCollection> _locationByCode = {};
+
+  _MonitorResolvedLocation resolve(Iterable<String> locationRefs) {
+    for (final ref in locationRefs) {
+      final location = _locationByKey[ref];
+      if (location == null) continue;
+
+      final floor = location.floorId == null ? null : _floorByKey[location.floorId!];
+      final zone = _zoneByKey[location.zoneId];
+      final slot = location.slotId == null ? null : _slotByKey[location.slotId!];
+
+      final floorLevel = floor?.levelNumber ?? 0;
+      final floorLabel = floorLevel == 0 ? 'Ground Floor' : 'Floor $floorLevel';
+      final zoneLabel = zone?.name ?? 'Zone #Num';
+
+      return _MonitorResolvedLocation(
+        floorLevel: floorLevel,
+        row: slot?.row,
+        column: slot?.column,
+        locationLabel: '$floorLabel, $zoneLabel',
+        lastKnownPosition: zoneLabel,
+      );
+    }
+
+    return const _MonitorResolvedLocation(
+      floorLevel: 0,
+      locationLabel: 'Ground Floor, Zone #Num',
+      lastKnownPosition: 'Expedition Zone',
+    );
+  }
+
+  _GridPoint? resolveRouteNodeToPoint({
+    required String node,
+    required int floorLevel,
+    required int rows,
+    required int columns,
+  }) {
+    final value = node.trim();
+    if (value.isEmpty) return null;
+
+    final upper = value.toUpperCase();
+
+    if (upper == 'RDC_NODE' || upper == 'RDC') {
+      if (floorLevel != 0) return null;
+      return _GridPoint(row: 2.clamp(1, rows), column: 2.clamp(1, columns));
+    }
+
+    if (upper == 'EXP_NODE' || upper.startsWith('EXP')) {
+      if (floorLevel != 0) return null;
+      return _GridPoint(
+        row: (rows - 1).clamp(1, rows),
+        column: (columns - 1).clamp(1, columns),
+      );
+    }
+
+    if (upper.startsWith('ELEV_F')) {
+      final level = int.tryParse(upper.replaceFirst('ELEV_F', ''));
+      if (level == null || level != floorLevel) return null;
+      return _GridPoint(
+        row: 2.clamp(1, rows),
+        column: (columns - 2).clamp(1, columns),
+      );
+    }
+
+    final direct = _locationByKey[value];
+    final byCode = _locationByCode[_normalizeCode(value)];
+    final location = direct ?? byCode;
+    if (location == null) return null;
+
+    final floor = location.floorId == null ? null : _floorByKey[location.floorId!];
+    final locationFloor = floor?.levelNumber ?? 0;
+    if (locationFloor != floorLevel) return null;
+
+    if (location.slotId == null || location.slotId!.isEmpty) return null;
+    final slot = _slotByKey[location.slotId!];
+    if (slot == null) return null;
+
+    return _GridPoint(
+      row: slot.row.clamp(1, rows),
+      column: slot.column.clamp(1, columns),
+    );
+  }
+
+  String _normalizeCode(String value) {
+    return value.toUpperCase().replaceAll('-', '').replaceAll(' ', '');
+  }
 }
 
 class _SupervisorTaskCard extends StatelessWidget {
@@ -2609,6 +5672,7 @@ class _SupervisorTaskCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     final typeColor = overrideColor ?? data.type.color;
+    final isReviewAction = showReviewButton || data.isEmployeeReport;
 
     if (compact) {
       return Container(
@@ -2785,7 +5849,7 @@ class _SupervisorTaskCard extends StatelessWidget {
         ],
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize: MainAxisSize.max,
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -2856,55 +5920,57 @@ class _SupervisorTaskCard extends StatelessWidget {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _InfoRow(label: 'Floor', value: data.floor),
-                      const SizedBox(height: 8),
-                      _InfoRow(
-                        label: data.zoneOrSlotLabel,
-                        value: data.zoneOrSlotValue,
-                      ),
-                      if (data.skuCount > 0) ...[
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _InfoRow(label: 'Floor', value: data.floor),
                         const SizedBox(height: 8),
-                        _InfoRow(label: '📦', value: '${data.skuCount} SKUs'),
+                        _InfoRow(
+                          label: data.zoneOrSlotLabel,
+                          value: data.zoneOrSlotValue,
+                        ),
+                        if (data.skuCount > 0) ...[
+                          const SizedBox(height: 8),
+                          _InfoRow(label: '📦', value: '${data.skuCount} SKUs'),
+                        ],
                       ],
-                    ],
-                  ),
-                ),
-                if (data.issues.isEmpty)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      width: 80,
-                      height: 80,
-                      color: const Color(0xFFE2E8F0),
-                      child: const Icon(
-                        Icons.image_outlined,
-                        size: 32,
-                        color: Color(0xFF94A3B8),
-                      ),
                     ),
                   ),
-              ],
+                  if (data.issues.isEmpty)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        width: 80,
+                        height: 80,
+                        color: const Color(0xFFE2E8F0),
+                        child: const Icon(
+                          Icons.image_outlined,
+                          size: 32,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
             child: SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: showReviewButton ? onReview : onReassign,
+                onPressed: isReviewAction ? onReview : onReassign,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: typeColor,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -2914,7 +5980,7 @@ class _SupervisorTaskCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      showReviewButton ? 'Review' : 'Re-Assign',
+                      isReviewAction ? 'Review' : 'Re-Assign',
                       style: GoogleFonts.manrope(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
@@ -2922,7 +5988,7 @@ class _SupervisorTaskCard extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Icon(
-                      showReviewButton
+                      isReviewAction
                           ? Icons.arrow_forward_rounded
                           : Icons.replay_outlined,
                       size: 18,
@@ -3264,7 +6330,7 @@ extension TaskTypeUI on TaskType {
   }
 }
 
-enum TaskTypeFilter { reports, forecast, transfer, pick }
+enum TaskTypeFilter { reports, aiProposed }
 
 enum ProposedTaskFilter { forecast, transfer, pick }
 
@@ -3319,25 +6385,17 @@ extension TaskTypeFilterUI on TaskTypeFilter {
     switch (this) {
       case TaskTypeFilter.reports:
         return 'Reports';
-      case TaskTypeFilter.forecast:
-        return 'Forecast';
-      case TaskTypeFilter.transfer:
-        return 'Transfer';
-      case TaskTypeFilter.pick:
-        return 'Pick';
+      case TaskTypeFilter.aiProposed:
+        return 'AI Proposed Tasks';
     }
   }
 
   Color get color {
     switch (this) {
       case TaskTypeFilter.reports:
-        return const Color(0xFF16A34A);
-      case TaskTypeFilter.forecast:
+        return const Color(0xFFF97316);
+      case TaskTypeFilter.aiProposed:
         return const Color(0xFF3C91CC);
-      case TaskTypeFilter.transfer:
-        return const Color(0xFF7B67BF);
-      case TaskTypeFilter.pick:
-        return const Color(0xFF006D84);
     }
   }
 
@@ -3345,12 +6403,57 @@ extension TaskTypeFilterUI on TaskTypeFilter {
     switch (this) {
       case TaskTypeFilter.reports:
         return task.isEmployeeReport;
-      case TaskTypeFilter.forecast:
+      case TaskTypeFilter.aiProposed:
+        return !task.isEmployeeReport;
+    }
+  }
+}
+
+enum ReportIssueFilter { all, receipt, storage, picking, delivery }
+
+extension ReportIssueFilterUI on ReportIssueFilter {
+  String get label {
+    switch (this) {
+      case ReportIssueFilter.all:
+        return 'All';
+      case ReportIssueFilter.receipt:
+        return 'Receipt';
+      case ReportIssueFilter.storage:
+        return 'Storage';
+      case ReportIssueFilter.picking:
+        return 'Picking';
+      case ReportIssueFilter.delivery:
+        return 'Delivery';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case ReportIssueFilter.all:
+        return const Color(0xFF0F172A);
+      case ReportIssueFilter.receipt:
+        return const Color(0xFF3C91CC);
+      case ReportIssueFilter.storage:
+        return const Color(0xFF7B67BF);
+      case ReportIssueFilter.picking:
+        return const Color(0xFF006D84);
+      case ReportIssueFilter.delivery:
+        return const Color(0xFF71B643);
+    }
+  }
+
+  bool matches(_TaskCardData task) {
+    switch (this) {
+      case ReportIssueFilter.all:
+        return true;
+      case ReportIssueFilter.receipt:
         return task.type == TaskType.receipt;
-      case TaskTypeFilter.transfer:
-        return task.type == TaskType.storage || task.type == TaskType.delivery;
-      case TaskTypeFilter.pick:
+      case ReportIssueFilter.storage:
+        return task.type == TaskType.storage;
+      case ReportIssueFilter.picking:
         return task.type == TaskType.picking;
+      case ReportIssueFilter.delivery:
+        return task.type == TaskType.delivery;
     }
   }
 }
