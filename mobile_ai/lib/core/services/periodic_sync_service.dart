@@ -59,11 +59,21 @@ class PeriodicSyncService {
     try {
       _logger.d('Starting sync cycle');
       
-      // 1. Push local changes
-      await _syncService.pushChanges();
+      // 1. Push local changes (with error handling)
+      try {
+        await _syncService.pushChanges();
+      } catch (e) {
+        _logger.e('Push failed', error: e);
+        // Don't rethrow - continue with pull
+      }
       
-      // 2. Pull remote changes
-      await _syncService.pullChanges();
+      // 2. Pull remote changes (with error handling)
+      try {
+        await _syncService.pullChanges();
+      } catch (e) {
+        _logger.e('Pull failed', error: e);
+        // Don't rethrow - sync will retry next cycle
+      }
       
       _logger.d('Sync cycle completed');
     } catch (e) {

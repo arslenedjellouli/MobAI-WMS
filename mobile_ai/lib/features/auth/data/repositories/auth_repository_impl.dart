@@ -1,10 +1,12 @@
 import 'package:dartz/dartz.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:get_it/get_it.dart';
 import 'package:isar/isar.dart';
 
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/errors/failures.dart';
+import 'package:mobile_ai/core/services/periodic_sync_service.dart';
 import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
 
 abstract class AuthRepository {
@@ -65,6 +67,13 @@ class AuthRepositoryImpl implements AuthRepository {
         await isar.userCollections.put(user);
       });
 
+      // Start background sync service after successful login
+      try {
+        GetIt.I<PeriodicSyncService>().start();
+      } catch (e) {
+        // Ignore if sync service not initialized
+      }
+
       return Right(user);
     } catch (e) {
       return Left(ServerFailure(e.toString()));
@@ -74,6 +83,13 @@ class AuthRepositoryImpl implements AuthRepository {
   @override
   Future<Either<Failure, void>> logout() async {
     try {
+      // Stop background sync service
+      try {
+        GetIt.I<PeriodicSyncService>().stop();
+      } catch (e) {
+        // Ignore if sync service not initialized
+      }
+
       await storage.delete(key: 'auth_token');
       final isar = db.isar;
       await isar.writeTxn(() async {

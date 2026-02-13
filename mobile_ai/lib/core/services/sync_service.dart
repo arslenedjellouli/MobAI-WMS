@@ -85,7 +85,6 @@ class SyncService {
         };
       }).toList();
 
-      // 3. Send to backend
       try {
         final response = await _apiClient.post(
           '/sync/push/',

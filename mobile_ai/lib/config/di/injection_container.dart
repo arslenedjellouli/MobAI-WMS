@@ -85,8 +85,8 @@ Future<void> init() async {
     ),
   );
   
-  // Start background sync
-  sl<PeriodicSyncService>().start();
+  // Start background sync only after login (moved to login repository)
+  // sl<PeriodicSyncService>().start();
 
   // Legacy Services (Keep for now)
   sl.registerLazySingleton<NetworkService>(
