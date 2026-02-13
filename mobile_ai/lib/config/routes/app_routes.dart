@@ -11,10 +11,12 @@ import 'package:mobile_ai/features/dashboard/presentation/pages/supervisor_dashb
 import 'package:mobile_ai/features/users/presentation/pages/user_management_page.dart';
 import 'package:mobile_ai/features/users/presentation/pages/add_user_page.dart';
 import 'package:mobile_ai/features/users/presentation/pages/edit_user_page.dart';
+import 'package:mobile_ai/features/users/data/models/user_api_models.dart';
 
 import 'package:mobile_ai/features/inventory/presentation/pages/product_management_page.dart';
 import 'package:mobile_ai/features/inventory/presentation/pages/add_product_page.dart';
 import 'package:mobile_ai/features/inventory/presentation/pages/edit_product_page.dart';
+import 'package:mobile_ai/features/inventory/data/models/product_api_models.dart';
 
 import 'package:mobile_ai/features/inventory/presentation/pages/chariot_management_page.dart';
 import 'package:mobile_ai/features/inventory/presentation/pages/add_chariot_page.dart';
@@ -22,6 +24,8 @@ import 'package:mobile_ai/features/inventory/presentation/pages/edit_chariot_pag
 
 import 'package:mobile_ai/features/warehouse/presentation/pages/warehouse_management_page.dart';
 import 'package:mobile_ai/features/warehouse/presentation/pages/add_warehouse_page.dart';
+import 'package:mobile_ai/features/warehouse/presentation/pages/edit_warehouse_page.dart';
+import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 
 
 // TODO: Import pages as they are created
@@ -154,7 +158,7 @@ class AppRoutes {
         );
 
       case editUser:
-        final user = settings.arguments as Map<String, dynamic>;
+        final user = settings.arguments as UserApiModel;
         return MaterialPageRoute(
           builder: (_) => EditUserPage(user: user),
         );
@@ -170,7 +174,7 @@ class AppRoutes {
         );
 
       case editProduct:
-        final product = settings.arguments as Map<String, dynamic>;
+        final product = settings.arguments as ProductApiModel;
         return MaterialPageRoute(
           builder: (_) => EditProductPage(product: product),
         );
@@ -199,6 +203,12 @@ class AppRoutes {
       case addWarehouse:
         return MaterialPageRoute(
           builder: (_) => const AddWarehousePage(),
+        );
+
+      case editWarehouse:
+        final warehouse = settings.arguments as WarehouseApiModel;
+        return MaterialPageRoute(
+          builder: (_) => EditWarehousePage(warehouse: warehouse),
         );
 
       case supervisorDashboard:

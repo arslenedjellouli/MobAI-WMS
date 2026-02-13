@@ -1,11 +1,11 @@
 enum WarehouseItemType {
-  rackStorage(1, 1, 'Rack Storage', true),
-  office(1, 1, 'Office', true), // Size can be changed
-  goodsLift(3, 4, 'Goods Lift', false),
-  lift(5, 2, 'Lift', false),
-  vrac(1, 1, 'VRAC', true), // Flexible
-  shippingArea(7, 5, 'Shipping Area', false),
-  floorStorage(1, 1, 'Floor Storage', true);
+  rackStorage(2, 1, 'Rack Storage', true),
+  office(3, 2, 'Office', true),
+  goodsLift(3, 4, 'Goods Lift', true),
+  lift(2, 2, 'Lift', true),
+  vrac(3, 3, 'VRAC', true),
+  shippingArea(5, 4, 'Shipping Area', true),
+  floorStorage(2, 2, 'Floor Storage', true);
 
   final int defaultWidth;
   final int defaultHeight;

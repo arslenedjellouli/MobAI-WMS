@@ -96,11 +96,21 @@ class _LoginPageState extends State<LoginPage> {
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {
             // Route based on user role
-            final targetRoute = user.isSupervisor 
-                ? AppRoutes.supervisorDashboard 
-                : AppRoutes.dashboard;
+            String targetRoute;
+            String roleLabel;
+            
+            if (user.isAdmin) {
+              targetRoute = AppRoutes.adminDashboard;
+              roleLabel = 'admin';
+            } else if (user.isSupervisor) {
+              targetRoute = AppRoutes.supervisorDashboard;
+              roleLabel = 'supervisor';
+            } else {
+              targetRoute = AppRoutes.dashboard;
+              roleLabel = 'employee';
+            }
                 
-            print('🔄 [LoginPage] Navigating to ${user.isSupervisor ? "supervisor" : "employee"} dashboard...');
+            print('🔄 [LoginPage] Navigating to $roleLabel dashboard...');
             Navigator.of(context).pushNamedAndRemoveUntil(
               targetRoute,
               (route) => false,

@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import '../../../../core/api/api_client.dart';
+import '../../data/datasources/warehouse_remote_datasource.dart';
+import '../../data/datasources/floor_remote_datasource.dart';
+import '../../data/repositories/warehouse_repository_impl.dart';
+import '../../data/models/warehouse_api_models.dart';
 
 class WarehouseManagementPage extends StatefulWidget {
   const WarehouseManagementPage({super.key});
@@ -10,40 +15,43 @@ class WarehouseManagementPage extends StatefulWidget {
 }
 
 class _WarehouseManagementPageState extends State<WarehouseManagementPage> {
-  String _selectedType = 'All';
-  final List<String> _types = ['All', 'Distribution', 'Cold Storage'];
+  late final WarehouseRepositoryImpl _repository;
+  List<WarehouseApiModel> _warehouses = [];
+  bool _isLoading = true;
+  String? _error;
 
-  // Mock Warehouses
-  final List<Map<String, dynamic>> _warehouses = [
-    {
-      'id': '1',
-      'name': 'Main Hub - Algiers',
-      'type': 'Distribution',
-      'floors': 3,
-      'status': 'Active',
-    },
-    {
-      'id': '2',
-      'name': 'Oran Zone B',
-      'type': 'Cold Storage',
-      'floors': 1,
-      'status': 'Active',
-    },
-    {
-      'id': '3',
-      'name': 'East Side Depot',
-      'type': 'Distribution',
-      'floors': 2,
-      'status': 'Inactive',
-    },
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _repository = WarehouseRepositoryImpl(
+      remoteDatasource: WarehouseRemoteDatasourceImpl(apiClient: ApiClient()),
+      floorDatasource: FloorRemoteDatasourceImpl(apiClient: ApiClient()),
+    );
+    _loadWarehouses();
+  }
+
+  Future<void> _loadWarehouses() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final warehouses = await _repository.getWarehouses();
+      setState(() {
+        _warehouses = warehouses;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final filteredWarehouses = _selectedType == 'All'
-        ? _warehouses
-        : _warehouses.where((w) => w['type'] == _selectedType).toList();
-
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
@@ -62,66 +70,20 @@ class _WarehouseManagementPageState extends State<WarehouseManagementPage> {
           icon: const Icon(Icons.arrow_back_ios_new, size: 20, color: Color(0xFF0F172A)),
           onPressed: () => Navigator.of(context).pop(),
         ),
-      ),
-      body: Column(
-        children: [
-          // Filter Section
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            color: Colors.white,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: _types.map((type) {
-                  final isSelected = _selectedType == type;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(
-                        type,
-                        style: GoogleFonts.inter(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                          color: isSelected ? Colors.white : const Color(0xFF64748B),
-                        ),
-                      ),
-                      selected: isSelected,
-                      selectedColor: const Color(0xFF0093B2),
-                      backgroundColor: const Color(0xFFF1F5F9),
-                      side: BorderSide.none,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      onSelected: (selected) {
-                        if (selected) {
-                          setState(() => _selectedType = type);
-                        }
-                      },
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ),
-          
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: filteredWarehouses.length,
-              itemBuilder: (context, index) {
-                final warehouse = filteredWarehouses[index];
-                return _WarehouseCard(
-                  warehouse: warehouse,
-                  onTap: () {
-                    // Navigate to Edit Warehouse (Not implemented yet, just simulate for now)
-                  },
-                );
-              },
-            ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Color(0xFF0F172A)),
+            onPressed: _loadWarehouses,
           ),
         ],
       ),
+      body: _buildBody(),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.pushNamed(context, AppRoutes.addWarehouse); 
+        onPressed: () async {
+          final result = await Navigator.pushNamed(context, AppRoutes.addWarehouse);
+          if (result == true) {
+            _loadWarehouses();
+          }
         },
         backgroundColor: const Color(0xFF0093B2),
         icon: const Icon(Icons.add, color: Colors.white),
@@ -132,10 +94,85 @@ class _WarehouseManagementPageState extends State<WarehouseManagementPage> {
       ),
     );
   }
+
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: Color(0xFFEF4444)),
+            const SizedBox(height: 16),
+            Text(
+              'Error loading warehouses',
+              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: GoogleFonts.inter(fontSize: 14, color: Color(0xFF64748B)),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadWarehouses,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_warehouses.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.warehouse_outlined, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              'No warehouses yet',
+              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Add your first warehouse to get started',
+              style: GoogleFonts.inter(fontSize: 14, color: Color(0xFF64748B)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _warehouses.length,
+      itemBuilder: (context, index) {
+        final warehouse = _warehouses[index];
+        return _WarehouseCard(
+          warehouse: warehouse,
+          onTap: () async {
+            final result = await Navigator.pushNamed(
+              context,
+              AppRoutes.editWarehouse,
+              arguments: warehouse,
+            );
+            if (result == true) {
+              _loadWarehouses();
+            }
+          },
+        );
+      },
+    );
+  }
 }
 
 class _WarehouseCard extends StatelessWidget {
-  final Map<String, dynamic> warehouse;
+  final WarehouseApiModel warehouse;
   final VoidCallback onTap;
 
   const _WarehouseCard({
@@ -145,9 +182,6 @@ class _WarehouseCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isActive = warehouse['status'] == 'Active';
-    final Color statusColor = isActive ? const Color(0xFF10B981) : const Color(0xFFEF4444);
-
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -186,7 +220,7 @@ class _WarehouseCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        warehouse['name'],
+                        warehouse.name,
                         style: GoogleFonts.inter(
                           fontWeight: FontWeight.w600,
                           fontSize: 16,
@@ -195,7 +229,7 @@ class _WarehouseCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${warehouse['type']} • ${warehouse['floors']} Floors',
+                        'Code: ${warehouse.code} • ${warehouse.length.toStringAsFixed(0)}m × ${warehouse.width.toStringAsFixed(0)}m',
                         style: GoogleFonts.inter(
                           fontSize: 14,
                           color: const Color(0xFF64748B),
@@ -204,28 +238,7 @@ class _WarehouseCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: statusColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        warehouse['status'],
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: statusColor,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Icon(Icons.chevron_right, color: Color(0xFFCBD5E1)),
-                  ],
-                ),
+                const Icon(Icons.chevron_right, color: Color(0xFFCBD5E1)),
               ],
             ),
           ),

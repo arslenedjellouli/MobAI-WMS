@@ -9,6 +9,9 @@ class ApiClient {
   final FlutterSecureStorage _storage;
   final Logger _logger;
 
+  // Expose Dio instance for direct access when needed
+  Dio get dio => _dio;
+
   // Base URL for the backend API - Platform dependent
   static String get _baseUrl {
     // Web
