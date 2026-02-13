@@ -2,17 +2,30 @@ import 'package:get_it/get_it.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:logger/logger.dart';
+
+import 'package:mobile_ai/core/database/isar_database.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
+import 'package:mobile_ai/core/services/connectivity_service.dart';
+import 'package:mobile_ai/core/services/sync_service.dart';
+import 'package:mobile_ai/core/services/periodic_sync_service.dart';
 
 // Core Services
 import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/storage/storage_service.dart';
 import 'package:mobile_ai/core/storage/secure_storage_service.dart';
 
+
+import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
+import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
+import 'package:mobile_ai/features/bons/data/repositories/bon_picking_repository_impl.dart';
+import 'package:mobile_ai/features/inventory/data/repositories/stock_repository_impl.dart';
+
 // TODO: Uncomment imports as features are implemented
 // Auth Feature
 // import 'package:mobile_ai/features/auth/data/datasources/auth_local_datasource.dart';
-// import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
-// import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
 // import 'package:mobile_ai/features/auth/domain/repositories/auth_repository.dart';
 // import 'package:mobile_ai/features/auth/domain/usecases/login_usecase.dart';
 // import 'package:mobile_ai/features/auth/domain/usecases/logout_usecase.dart';
@@ -27,10 +40,55 @@ Future<void> init() async {
   // ========== External Dependencies ==========
   final sharedPreferences = await SharedPreferences.getInstance();
   sl.registerLazySingleton(() => sharedPreferences);
-  sl.registerLazySingleton(() => http.Client());
+  sl.registerLazySingleton(() => http.Client()); // Legacy
+  sl.registerLazySingleton(() => Dio()); // New
   sl.registerLazySingleton(() => const FlutterSecureStorage());
+  sl.registerLazySingleton(() => Connectivity());
+  sl.registerLazySingleton(() => Logger());
+
+  // ========== Core Database ==========
+  final isarDatabase = IsarDatabase();
+  await isarDatabase.initialize();
+  sl.registerLazySingleton(() => isarDatabase);
 
   // ========== Core Services ==========
+  sl.registerLazySingleton<ApiClient>(
+    () => ApiClient(
+      dio: sl(), 
+      storage: sl(),
+      logger: sl()
+    ),
+  );
+  
+  sl.registerLazySingleton<ConnectivityService>(
+    () => ConnectivityService(
+      connectivity: sl(),
+      logger: sl()
+    ),
+  );
+
+  sl.registerLazySingleton<SyncService>(
+    () => SyncService(
+      apiClient: sl(),
+      db: sl(),
+      connectivity: sl(),
+      storage: sl(),
+      logger: sl()
+    ),
+  );
+
+  sl.registerLazySingleton<PeriodicSyncService>(
+    () => PeriodicSyncService(
+      syncService: sl(),
+      connectivityService: sl(),
+      logger: sl()
+    ),
+  );
+  
+  // Start background sync
+  sl<PeriodicSyncService>().start();
+
+  // Legacy Services (Keep for now)
   sl.registerLazySingleton<NetworkService>(
     () => NetworkService(client: sl()),
   );
@@ -49,13 +107,26 @@ Future<void> init() async {
   // ... other features
 }
 
-/// Auth Feature DI
-void _initAuthFeature() {
-  // TODO: Uncomment as implementations are created
+  // ========== Repositories ==========
+  sl.registerLazySingleton<AuthRemoteDataSource>(
+    () => AuthRemoteDataSourceImpl(client: sl()),
+  );
+  
+  sl.registerLazySingleton<AuthRepository>(
+    () => AuthRepositoryImpl(
+      remoteDataSource: sl(), 
+      db: sl(), 
+      storage: sl()
+    ),
+  );
 
-  // Bloc
-  // sl.registerFactory(() => AuthBloc(
-  //       loginUseCase: sl(),
+  sl.registerLazySingleton<BonPickingRepository>(
+    () => BonPickingRepositoryImpl(db: sl()),
+  );
+
+  sl.registerLazySingleton<StockRepository>(
+    () => StockRepositoryImpl(db: sl()),
+  );
   //       logoutUseCase: sl(),
   //       getCurrentUserUseCase: sl(),
   //     ));
