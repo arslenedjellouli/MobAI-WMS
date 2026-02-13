@@ -125,10 +125,12 @@ class AdminDashboardPage extends StatelessWidget {
 
     final actions = [
       _ActionItem(
-        icon: Icons.warehouse_outlined,
-        label: "Manage Warehouses",
+        icon: Icons.domain_outlined, // Building icon
+        label: "Manages Warehouse",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.pushNamed(context, AppRoutes.warehouses);
+        },
       ),
       _ActionItem(
         icon: Icons.people_outline,

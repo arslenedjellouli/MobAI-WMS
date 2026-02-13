@@ -19,6 +19,9 @@ import 'package:mobile_ai/features/inventory/presentation/pages/chariot_manageme
 import 'package:mobile_ai/features/inventory/presentation/pages/add_chariot_page.dart';
 import 'package:mobile_ai/features/inventory/presentation/pages/edit_chariot_page.dart';
 
+import 'package:mobile_ai/features/warehouse/presentation/pages/warehouse_management_page.dart';
+import 'package:mobile_ai/features/warehouse/presentation/pages/add_warehouse_page.dart';
+
 
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
@@ -50,6 +53,9 @@ class AppRoutes {
   static const String dailyOperation = '/daily-operation';
 
   // Warehouse Routes
+  static const String warehouses = '/warehouses';
+  static const String addWarehouse = '/warehouses/add';
+  static const String editWarehouse = '/warehouses/edit';
   static const String zones = '/zones';
   static const String zoneDetail = '/zones/:id';
   static const String locations = '/locations';
@@ -182,6 +188,16 @@ class AppRoutes {
         final chariot = settings.arguments as Map<String, dynamic>;
         return MaterialPageRoute(
           builder: (_) => EditChariotPage(chariot: chariot),
+        );
+
+      case warehouses:
+        return MaterialPageRoute(
+          builder: (_) => const WarehouseManagementPage(),
+        );
+
+      case addWarehouse:
+        return MaterialPageRoute(
+          builder: (_) => const AddWarehousePage(),
         );
 
       case bonPickings:
