@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:mobile_ai/features/dashboard/presentation/pages/employee_dashboard_page.dart';
+
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
 // import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
@@ -83,7 +85,7 @@ class AppRoutes {
 
       case dashboard:
         return MaterialPageRoute(
-          builder: (_) => _placeholder('Dashboard', 'Role-based dashboard'),
+          builder: (_) => const EmployeeDashboardPage(),
         );
 
       case bonPickings:
