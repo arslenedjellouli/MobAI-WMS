@@ -97,19 +97,31 @@ class SyncService {
 
         // 4. Update local status based on response
         if (response.statusCode == 200 || response.statusCode == 201) {
-          // Response contains created_items and errors
-          
+          final data = response.data as Map<String, dynamic>? ?? const {};
+          final errorCount = (data['error_count'] as int?) ?? 0;
+          final errors = (data['errors'] as List?) ?? const [];
+
           await isar.writeTxn(() async {
             for (final item in itemsToPush) {
-               // Mark as completed for now
-               // In production, check if item.queueId is in created_items
-               item.status = SyncQueueStatus.completed;
+               if (errorCount > 0) {
+                 item.status = SyncQueueStatus.failed;
+                 item.lastError = errors.isNotEmpty
+                     ? errors.first.toString()
+                     : 'Backend rejected sync payload';
+               } else {
+                 item.status = SyncQueueStatus.completed;
+                 item.lastError = null;
+               }
                item.lastAttemptAt = DateTime.now();
                await isar.syncQueueCollections.put(item);
             }
           });
           
-          _logger.i('Push successful');
+          if (errorCount > 0) {
+            _logger.w('Push completed with backend errors: $errorCount');
+          } else {
+            _logger.i('Push successful');
+          }
         }
       } catch (e) {
         // Handle API error
@@ -404,6 +416,9 @@ class SyncService {
     final s = type.toString();
     if (s.contains('BonPicking')) return 'BonPicking';
     if (s.contains('BonCommande')) return 'BonCommande';
+    if (s.contains('BonReplenishment')) return 'BonReplenishment';
+    if (s.contains('BonLivraison')) return 'BonLivraison';
+    if (s.contains('BonPreparation')) return 'BonPreparation';
     if (s.contains('Stock')) return 'Stock';
     if (s.contains('TaskReport')) return 'TaskReport';
     return 'Unknown';

@@ -14,6 +14,7 @@ import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_queue_collection.dart';
 import 'package:mobile_ai/core/network/network_service.dart';
@@ -36,6 +37,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   final SyncService _syncService = sl<SyncService>();
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
   final Uuid _uuid = const Uuid();
+  final PageController _reportedPageController = PageController(
+    viewportFraction: 0.96,
+  );
 
   AppBottomTab _currentView = AppBottomTab.home;
   TaskTypeFilter _selectedFilter = TaskTypeFilter.receipt;
@@ -57,6 +61,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   int _storageCount = 0;
   int _pickingCount = 0;
   int _deliveryCount = 0;
+  int _currentReportedPage = 0;
 
   StreamSubscription<NetworkStatus>? _networkSub;
 
@@ -69,6 +74,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   @override
   void dispose() {
     _networkSub?.cancel();
+    _reportedPageController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -103,16 +109,33 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final picking = await _isar.bonPickingCollections.where().findAll();
     final livraison = await _isar.bonLivraisonCollections.where().findAll();
 
+    // Only load EmployeeTasks assigned BY this supervisor (not all tasks)
+    final supervisorBackendId = user?.backendId;
+    final allEmployeeTasks = await _isar.employeeTaskCollections.where().findAll();
+    final employeeTasks = allEmployeeTasks
+      .where((task) =>
+        supervisorBackendId != null &&
+        supervisorBackendId.isNotEmpty &&
+        task.assignedByUserId == supervisorBackendId)
+      .toList();
+
     final reported = <_TaskCardData>[];
     final proposed = <_TaskCardData>[];
+    final history = await _loadPersistedHistory();
 
-    int receiptCount = 0;
-    int storageCount = 0;
-    int pickingCount = 0;
-    int deliveryCount = 0;
+    // Process Employee Tasks
+    for (final task in employeeTasks) {
+      final taskCard = _taskFromEmployeeTask(task);
+      
+      // Categorize as reported or proposed
+      if (task.notes != null && task.notes!.contains('ISSUE_REPORTED')) {
+        reported.add(taskCard);
+      } else if (task.status == EmployeeTaskStatus.pending) {
+        proposed.add(taskCard);
+      }
+    }
 
     for (final item in commandes) {
-      receiptCount++;
       final task = _taskFromCommande(item);
       // Check if notes contain "ISSUE_REPORTED" for reported tasks
       if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
@@ -123,7 +146,6 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in replenish) {
-      storageCount++;
       final task = _taskFromReplenishment(item);
       if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
         reported.add(task);
@@ -133,7 +155,6 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in picking) {
-      pickingCount++;
       final task = _taskFromPicking(item);
       if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
         reported.add(task);
@@ -143,7 +164,6 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     }
 
     for (final item in livraison) {
-      deliveryCount++;
       final task = _taskFromLivraison(item);
       if (item.notes != null && item.notes!.contains('ISSUE_REPORTED')) {
         reported.add(task);
@@ -154,6 +174,28 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
     reported.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     proposed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    // Donut totals should reflect active proposals only
+    int receiptCount = 0;
+    int storageCount = 0;
+    int pickingCount = 0;
+    int deliveryCount = 0;
+    for (final task in proposed) {
+      switch (task.type) {
+        case TaskType.receipt:
+          receiptCount++;
+          break;
+        case TaskType.storage:
+          storageCount++;
+          break;
+        case TaskType.picking:
+          pickingCount++;
+          break;
+        case TaskType.delivery:
+          deliveryCount++;
+          break;
+      }
+    }
 
     if (!mounted) return;
     setState(() {
@@ -169,6 +211,16 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         ..clear()
         ..addAll(proposed);
 
+      _historyActions
+        ..clear()
+        ..addAll(history);
+
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+
       _receiptCount = receiptCount;
       _storageCount = storageCount;
       _pickingCount = pickingCount;
@@ -176,6 +228,92 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
 
       _isLoading = false;
     });
+  }
+
+  Future<List<_HistoryAction>> _loadPersistedHistory() async {
+    final queueItems = await _isar.syncQueueCollections
+        .where()
+        .sortByCreatedAtDesc()
+        .findAll();
+
+    final actions = <_HistoryAction>[];
+
+    for (final item in queueItems) {
+      try {
+        final payload = jsonDecode(item.dataJson) as Map<String, dynamic>;
+        final actionRaw = payload['action']?.toString().toUpperCase();
+        if (actionRaw == null) continue;
+
+        if (actionRaw != 'APPROVED' &&
+            actionRaw != 'REJECTED' &&
+            actionRaw != 'REASSIGNED' &&
+            actionRaw != 'DELETED') {
+          continue;
+        }
+
+        final taskCode = payload['task_code']?.toString();
+        final taskType = _taskTypeFromString(payload['task_type']?.toString()) ??
+            _taskTypeFromOperation(item.operationType);
+
+        actions.add(
+          _HistoryAction(
+            action: _historyActionLabel(actionRaw),
+            taskCode: taskCode ?? 'Unknown',
+            type: taskType,
+            timestamp: item.createdAt,
+          ),
+        );
+      } catch (_) {
+        // Ignore malformed queue entries
+      }
+    }
+
+    return actions;
+  }
+
+  String _historyActionLabel(String actionRaw) {
+    switch (actionRaw) {
+      case 'APPROVED':
+        return 'Approved';
+      case 'REJECTED':
+        return 'Rejected';
+      case 'REASSIGNED':
+        return 'Re-Assigned';
+      case 'DELETED':
+        return 'Deleted';
+      default:
+        return actionRaw;
+    }
+  }
+
+  TaskType _taskTypeFromOperation(SyncOperationType operationType) {
+    switch (operationType) {
+      case SyncOperationType.pushBonCommande:
+        return TaskType.receipt;
+      case SyncOperationType.pushBonReplenishment:
+        return TaskType.storage;
+      case SyncOperationType.pushBonPicking:
+        return TaskType.picking;
+      case SyncOperationType.pushBonLivraison:
+        return TaskType.delivery;
+      default:
+        return TaskType.receipt;
+    }
+  }
+
+  TaskType? _taskTypeFromString(String? value) {
+    switch (value?.toLowerCase()) {
+      case 'receipt':
+        return TaskType.receipt;
+      case 'storage':
+        return TaskType.storage;
+      case 'picking':
+        return TaskType.picking;
+      case 'delivery':
+        return TaskType.delivery;
+      default:
+        return null;
+    }
   }
 
   Future<void> _triggerSync({bool showLoader = true}) async {
@@ -360,6 +498,55 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
   }
 
+  _TaskCardData _taskFromEmployeeTask(EmployeeTaskCollection task) {
+    final issues = <String>[];
+    if (task.notes != null && task.notes!.contains('ISSUE_REPORTED:')) {
+      final noteLines = task.notes!.split('\n');
+      for (final line in noteLines) {
+        if (line.contains('ISSUE_REPORTED:')) {
+          issues.add(line.replaceFirst('ISSUE_REPORTED:', '').trim());
+        }
+      }
+    }
+
+    // Map EmployeeTaskType to TaskType
+    TaskType taskType;
+    switch (task.taskType) {
+      case EmployeeTaskType.receipt:
+        taskType = TaskType.receipt;
+        break;
+      case EmployeeTaskType.storage:
+      case EmployeeTaskType.replenishment:
+        taskType = TaskType.storage;
+        break;
+      case EmployeeTaskType.picking:
+      case EmployeeTaskType.preparation:
+        taskType = TaskType.picking;
+        break;
+      case EmployeeTaskType.delivery:
+        taskType = TaskType.delivery;
+        break;
+    }
+
+    return _TaskCardData(
+      source: _TaskSource.employeeTask,
+      localId: task.id,
+      backendId: task.backendId,
+      createdAt: task.createdAt,
+      type: taskType,
+      code: _taskCode(
+        backendId: task.backendId,
+        localId: task.id,
+        type: taskType,
+      ),
+      floor: 'Various',
+      zoneOrSlotLabel: 'Task',
+      zoneOrSlotValue: task.title ?? 'Untitled',
+      skuCount: task.itemsCount ?? 0,
+      issues: issues,
+    );
+  }
+
   SyncOperationType _operationForTask(TaskType type) {
     return switch (type) {
       TaskType.receipt => SyncOperationType.pushBonCommande,
@@ -379,6 +566,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       'id': task.backendId ?? task.localId.toString(),
       'local_id': task.localId,
       'action': action,
+      'task_code': task.code,
+      'task_type': task.type.name,
       'updated_at': DateTime.now().toIso8601String(),
       ...?extra,
     };
@@ -397,14 +586,20 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Future<void> _reassignTask(_TaskCardData task) async {
+    String? syncStatus;
+    String? syncNotes;
+
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
           final entity = await _isar.bonCommandeCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonCommandeStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
           final entity = await _isar.bonReplenishmentCollections.get(
@@ -412,31 +607,63 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           );
           if (entity == null) return;
           entity.status = BonReplenishmentStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonReplenishmentCollections.put(entity);
         case _TaskSource.bonPicking:
           final entity = await _isar.bonPickingCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonPickingStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
           await _isar.bonPickingCollections.put(entity);
         case _TaskSource.bonLivraison:
           final entity = await _isar.bonLivraisonCollections.get(task.localId);
           if (entity == null) return;
           entity.status = BonLivraisonStatus.idle;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = 'IDLE';
+          syncNotes = entity.notes;
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.pending;
+          entity.notes = _clearIssueReportedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'PENDING';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
-    await _enqueueTaskSync(task, action: 'REASSIGNED', priority: 9);
+    await _enqueueTaskSync(
+      task,
+      action: 'REASSIGNED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+      },
+      priority: 9,
+    );
 
     setState(() {
       _reportedTasks.remove(task);
       _proposedTasks.insert(0, task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
     });
 
     _addHistoryAction('Re-Assigned', task.code, task.type);
@@ -447,6 +674,158 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     );
 
     await _triggerSync(showLoader: false);
+  }
+
+  Future<void> _deleteTask(_TaskCardData task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          'Delete Task',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Delete ${task.code} from Handle Reports?',
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(
+                color: const Color(0xFF64748B),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Delete',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    String? syncStatus;
+    String? syncNotes;
+
+    await _isar.writeTxn(() async {
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonCommandeStatus.completed;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'COMPLETED';
+          syncNotes = entity.notes;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.failed;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'FAILED';
+          syncNotes = entity.notes;
+          await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = EmployeeTaskStatus.cancelled;
+          entity.notes = _markDeletedNotes(entity.notes);
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = 'CANCELLED';
+          syncNotes = entity.notes;
+          await _isar.employeeTaskCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(
+      task,
+      action: 'DELETED',
+      extra: {
+        'status': syncStatus,
+        'notes': syncNotes,
+      },
+      priority: 9,
+    );
+
+    setState(() {
+      _reportedTasks.remove(task);
+      if (_reportedTasks.isEmpty) {
+        _currentReportedPage = 0;
+      } else {
+        _currentReportedPage = math.min(_currentReportedPage, _reportedTasks.length - 1);
+      }
+    });
+
+    _addHistoryAction('Deleted', task.code, task.type);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Task ${task.code} deleted successfully')),
+    );
+
+    await _triggerSync(showLoader: false);
+  }
+
+  String _clearIssueReportedNotes(String? notes) {
+    final lines = (notes ?? '')
+        .split('\n')
+        .where((line) => !line.contains('ISSUE_REPORTED'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+
+    lines.add('REASSIGNED_BY_SUPERVISOR:${DateTime.now().toIso8601String()}');
+    return lines.join('\n');
+  }
+
+  String _markDeletedNotes(String? notes) {
+    final lines = (notes ?? '')
+        .split('\n')
+        .where((line) => !line.contains('ISSUE_REPORTED'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+
+    lines.add('DELETED_BY_SUPERVISOR:${DateTime.now().toIso8601String()}');
+    return lines.join('\n');
   }
 
   List<_TaskCardData> get _filteredProposedTasks {
@@ -906,7 +1285,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     border: Border.all(color: const Color(0xFFE2E8F0)),
                   ),
                   child: Text(
-                    '${_proposedTasks.length} Proposals | ${_reportedTasks.length} Overrides',
+                    '${_proposedTasks.length} Proposals | ${_reportedTasks.length} Reviews',
                     style: GoogleFonts.manrope(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -938,16 +1317,55 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         const SizedBox(height: 16),
         if (_reportedTasks.isEmpty)
           _buildEmptyState(textTheme, 'No reported issues.')
-        else
-          ..._reportedTasks.map(
-            (task) => Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: _SupervisorTaskCard(
-                data: task,
-                onReassign: () => _reassignTask(task),
-              ),
+        else ...[
+          SizedBox(
+            height: 140,
+            child: PageView.builder(
+              controller: _reportedPageController,
+              itemCount: _reportedTasks.length,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentReportedPage = index;
+                });
+              },
+              itemBuilder: (context, index) {
+                final task = _reportedTasks[index];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    child: SizedBox(
+                      width: 302,
+                      height: 123,
+                      child: _SupervisorTaskCard(
+                        data: task,
+                        compact: true,
+                        onDelete: () => _deleteTask(task),
+                        onReassign: () => _reassignTask(task),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(_reportedTasks.length, (index) {
+              final selectedColor = _reportedTasks[_currentReportedPage].type.color;
+              final isActive = index == _currentReportedPage;
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: isActive ? 10 : 8,
+                height: isActive ? 10 : 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isActive ? selectedColor : selectedColor.withOpacity(0.25),
+                ),
+              );
+            }),
+          ),
+        ],
       ],
     );
   }
@@ -1053,52 +1471,72 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final result = await _showReviewDialog(task);
     if (result == null) return;
 
+    final isApproved = result == 'approve';
+    String? syncStatus;
+
     await _isar.writeTxn(() async {
       switch (task.source) {
         case _TaskSource.bonCommande:
           final entity = await _isar.bonCommandeCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonCommandeStatus.pending
+          entity.status = isApproved
+              ? BonCommandeStatus.inProgress
               : BonCommandeStatus.completed;
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = isApproved ? 'IN_PROGRESS' : 'COMPLETED';
           await _isar.bonCommandeCollections.put(entity);
         case _TaskSource.bonReplenishment:
           final entity = await _isar.bonReplenishmentCollections.get(
             task.localId,
           );
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonReplenishmentStatus.pending
+          entity.status = isApproved
+              ? BonReplenishmentStatus.inProgress
               : BonReplenishmentStatus.cancelled;
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = isApproved ? 'IN_PROGRESS' : 'CANCELLED';
           await _isar.bonReplenishmentCollections.put(entity);
         case _TaskSource.bonPicking:
           final entity = await _isar.bonPickingCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonPickingStatus.pending
+          entity.status = isApproved
+              ? BonPickingStatus.inProgress
               : BonPickingStatus.cancelled;
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = isApproved ? 'IN_PROGRESS' : 'CANCELLED';
           await _isar.bonPickingCollections.put(entity);
         case _TaskSource.bonLivraison:
           final entity = await _isar.bonLivraisonCollections.get(task.localId);
           if (entity == null) return;
-          entity.status = result == 'approve'
-              ? BonLivraisonStatus.idle
+          entity.status = isApproved
+              ? BonLivraisonStatus.inProgress
               : BonLivraisonStatus.failed;
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
+          syncStatus = isApproved ? 'IN_PROGRESS' : 'FAILED';
           await _isar.bonLivraisonCollections.put(entity);
+        case _TaskSource.employeeTask:
+          final entity = await _isar.employeeTaskCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = isApproved
+              ? EmployeeTaskStatus.inProgress
+              : EmployeeTaskStatus.cancelled;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          syncStatus = isApproved ? 'IN_PROGRESS' : 'CANCELLED';
+          await _isar.employeeTaskCollections.put(entity);
       }
     });
 
     await _enqueueTaskSync(
       task,
       action: result == 'approve' ? 'APPROVED' : 'REJECTED',
+      extra: {
+        'status': syncStatus,
+      },
       priority: 9,
     );
 
@@ -1182,12 +1620,16 @@ class _SupervisorTaskCard extends StatelessWidget {
   const _SupervisorTaskCard({
     required this.data,
     this.showReviewButton = false,
+    this.compact = false,
+    this.onDelete,
     this.onReassign,
     this.onReview,
   });
 
   final _TaskCardData data;
   final bool showReviewButton;
+  final bool compact;
+  final VoidCallback? onDelete;
   final VoidCallback? onReassign;
   final VoidCallback? onReview;
 
@@ -1195,6 +1637,128 @@ class _SupervisorTaskCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     final typeColor = data.type.color;
+
+    if (compact) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 10,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: typeColor,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(18),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    data.type.icon,
+                    size: 16,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${data.type.label} - ${data.code}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.manrope(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      data.issues.isNotEmpty
+                          ? 'Issue: ${data.issues.first}'
+                          : '${data.zoneOrSlotLabel}: ${data.zoneOrSlotValue}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.manrope(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
+                    const Spacer(),
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 34,
+                          height: 34,
+                          child: OutlinedButton(
+                            onPressed: onDelete,
+                            style: OutlinedButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              side: const BorderSide(color: Colors.red, width: 1.6),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.delete_outline,
+                              size: 18,
+                              color: Colors.red,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: SizedBox(
+                            height: 34,
+                            child: ElevatedButton(
+                              onPressed: showReviewButton ? onReview : onReassign,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: typeColor,
+                                foregroundColor: Colors.white,
+                                padding: EdgeInsets.zero,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                elevation: 0,
+                              ),
+                              child: Text(
+                                showReviewButton ? 'Review' : 'Re-Assign',
+                                style: GoogleFonts.manrope(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -1209,6 +1773,7 @@ class _SupervisorTaskCard extends StatelessWidget {
         ],
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -1522,7 +2087,12 @@ class _HistoryCard extends StatelessWidget {
     final now = DateTime.now();
     final diff = now.difference(dt);
 
-    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 1) {
+      // Show hour:minute instead of "just now"
+      final hour = dt.hour.toString().padLeft(2, '0');
+      final minute = dt.minute.toString().padLeft(2, '0');
+      return '$hour:$minute';
+    }
     if (diff.inHours < 1) return '${diff.inMinutes}m ago';
     if (diff.inDays < 1) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
@@ -1531,6 +2101,7 @@ class _HistoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = action.type.color;
+    final actionColor = _actionColor(action.action);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1566,11 +2137,20 @@ class _HistoryCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${action.action} - ${action.taskCode}',
+                  action.taskCode,
                   style: GoogleFonts.manrope(
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
                     color: const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  action.action,
+                  style: GoogleFonts.manrope(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: actionColor,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1596,6 +2176,14 @@ class _HistoryCard extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Color _actionColor(String actionLabel) {
+    final normalized = actionLabel.toLowerCase();
+    if (normalized == 'approved') return Colors.green;
+    if (normalized == 'rejected') return Colors.red;
+    if (normalized == 'deleted') return Colors.red;
+    return const Color(0xFF64748B);
   }
 }
 
@@ -1628,7 +2216,7 @@ class _TaskCardData {
   final List<String> issues;
 }
 
-enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison }
+enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison, employeeTask }
 
 enum TaskType { receipt, storage, picking, delivery }
 

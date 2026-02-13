@@ -18,10 +18,11 @@ class ApiClient {
     
     // Mobile/Desktop
     if (Platform.isAndroid) {
-      // Android Emulator uses 10.0.2.2 to access host localhost
+      // Android Emulator: 10.0.2.2 maps to host's localhost
+      // Physical Device: Use your computer's local IP (e.g., 192.168.1.x)
       return 'http://10.0.2.2:8000/api';
     } else if (Platform.isIOS) {
-      // iOS Simulator uses localhost
+      // iOS Simulator can use localhost
       return 'http://localhost:8000/api';
     } else {
       // Windows, macOS, Linux desktop
