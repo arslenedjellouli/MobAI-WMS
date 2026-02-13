@@ -149,6 +149,8 @@ class SyncService {
       
       final lastSync = metadata.lastPullAt ?? DateTime(2000);
 
+      _logger.d('Pull request: device_id=$deviceId, last_sync=${lastSync.toIso8601String()}');
+
       // 2. Request changes
       final response = await _apiClient.get(
         '/sync/pull/',
@@ -174,8 +176,13 @@ class SyncService {
         
         _logger.i('Pull successful. New watermark: $syncTimestamp');
       }
-    } catch (e) {
-      _logger.e('Pull failed', error: e);
+    } catch (e, stackTrace) {
+      _logger.e('Pull failed', error: e, stackTrace: stackTrace);
+      // Check if it's a Dio error with response data
+      if (e.toString().contains('DioException') || e.toString().contains('DioError')) {
+        _logger.e('Backend error response: ${e.toString()}');
+      }
+      rethrow;
     }
   }
 
