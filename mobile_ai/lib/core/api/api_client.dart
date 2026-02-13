@@ -1,18 +1,33 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:logger/logger.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class ApiClient {
   final Dio _dio;
   final FlutterSecureStorage _storage;
   final Logger _logger;
 
-  // Base URL for the backend API
-  // Windows Desktop: http://localhost:8000/api
-  // Android Emulator: http://10.0.2.2:8000/api
-  // iOS Simulator: http://localhost:8000/api
-  // Change based on your platform!
-  static const String _baseUrl = 'http://localhost:8000/api'; 
+  // Base URL for the backend API - Platform dependent
+  static String get _baseUrl {
+    // Web
+    if (kIsWeb) {
+      return 'http://localhost:8000/api';
+    }
+    
+    // Mobile/Desktop
+    if (Platform.isAndroid) {
+      // Android Emulator uses 10.0.2.2 to access host localhost
+      return 'http://10.0.2.2:8000/api';
+    } else if (Platform.isIOS) {
+      // iOS Simulator uses localhost
+      return 'http://localhost:8000/api';
+    } else {
+      // Windows, macOS, Linux desktop
+      return 'http://localhost:8000/api';
+    }
+  }
   
   ApiClient({
     Dio? dio,

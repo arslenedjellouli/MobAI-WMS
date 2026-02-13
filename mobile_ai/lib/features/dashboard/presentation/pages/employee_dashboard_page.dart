@@ -1,9 +1,22 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:get_it/get_it.dart';
+import 'package:isar/isar.dart';
+import 'package:uuid/uuid.dart';
+
+import 'package:mobile_ai/config/di/injection_container.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
-import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
+import 'package:mobile_ai/core/database/models/sync/sync_queue_collection.dart';
+import 'package:mobile_ai/core/services/connectivity_service.dart';
+import 'package:mobile_ai/core/services/sync_service.dart';
 
 class EmployeeDashboardPage extends StatefulWidget {
   const EmployeeDashboardPage({super.key});
@@ -13,121 +26,417 @@ class EmployeeDashboardPage extends StatefulWidget {
 }
 
 class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
+  final Isar _isar = sl<IsarDatabase>().isar;
+  final SyncService _syncService = sl<SyncService>();
+  final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final Uuid _uuid = const Uuid();
+
   int _activeTabIndex = 0;
+  bool _isLoading = true;
+  bool _isSyncing = false;
 
-  late String _employeeName = 'Loading...';
-  late String _employeeId = 'N/A';
-  final _isOnline = true;
-  final _lastSync = 'now';
+  String _employeeName = 'Employee';
+  String _employeeId = '-';
+  String? _currentUserBackendId;
+  bool _isOnline = false;
+  String _lastSync = 'Never';
 
-  _TaskCardData? _currentTask = const _TaskCardData(
-    type: TaskType.receipt,
-    code: 'BS321',
-    floor: 'Ground (0)',
-    zoneOrSlotLabel: 'Zone',
-    zoneOrSlotValue: 'Receiving Bay 3',
-    skuCount: 21,
-  );
+  _TaskCardData? _currentTask;
+  final List<_TaskCardData> _remainingTasks = [];
+  final List<_TaskCardData> _completedTasks = [];
 
-  late final List<_TaskCardData> _remainingTasks = [
-    _TaskCardData(
-      type: TaskType.receipt,
-      code: 'EY120',
-      floor: 'Ground (0)',
-      zoneOrSlotLabel: 'Zone',
-      zoneOrSlotValue: 'Receiving Bay 1',
-      skuCount: 14,
-    ),
-    _TaskCardData(
-      type: TaskType.storage,
-      code: 'AS409',
-      floor: 'One (1)',
-      zoneOrSlotLabel: 'Slot',
-      zoneOrSlotValue: 'D25',
-      skuCount: 14,
-    ),
-    _TaskCardData(
-      type: TaskType.picking,
-      code: 'PO089',
-      floor: 'One (1)',
-      zoneOrSlotLabel: 'Slot',
-      zoneOrSlotValue: 'D25',
-      skuCount: 14,
-    ),
-    _TaskCardData(
-      type: TaskType.delivery,
-      code: 'HF438',
-      floor: 'One (1)',
-      zoneOrSlotLabel: 'Slot',
-      zoneOrSlotValue: 'D25',
-      skuCount: 14,
-    ),
-  ];
-
-  final List<_TaskCardData> _completedTasks = [
-    const _TaskCardData(
-      type: TaskType.storage,
-      code: 'AS120',
-      floor: 'One (1)',
-      zoneOrSlotLabel: 'Slot',
-      zoneOrSlotValue: 'C11',
-      skuCount: 9,
-    ),
-    const _TaskCardData(
-      type: TaskType.picking,
-      code: 'PK210',
-      floor: 'Ground (0)',
-      zoneOrSlotLabel: 'Slot',
-      zoneOrSlotValue: 'A02',
-      skuCount: 12,
-    ),
-  ];
+  StreamSubscription<NetworkStatus>? _networkSub;
 
   @override
   void initState() {
     super.initState();
-    _loadUserData();
+    _bootstrap();
   }
 
-  Future<void> _loadUserData() async {
-    try {
-      print('📚 [Dashboard] Loading user data from Isar...');
-      final db = GetIt.I<IsarDatabase>();
-      final isar = db.isar;
-      
-      // Get all users
-      final users = await isar.userCollections.buildQuery().findAll();
-      final user = users.isNotEmpty ? users.first : null;
-      
-      print('👤 [Dashboard] User found: ${user?.fullName}');
-      
-      if (user != null) {
-        setState(() {
-          _employeeName = user.fullName;
-          _employeeId = user.backendId ?? 'N/A';
-        });
-        print('✅ [Dashboard] User data updated: $_employeeName');
-      } else {
-        print('❌ [Dashboard] No user found in Isar database');
-        // Redirect to login if no user found
-        if (mounted) {
-          print('🔄 [Dashboard] Redirecting to login...');
-          Navigator.of(context).pushNamedAndRemoveUntil(
-            AppRoutes.login,
-            (route) => false,
-          );
-        }
+  @override
+  void dispose() {
+    _networkSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _bootstrap() async {
+    _isOnline = _connectivityService.isOnline;
+
+    _networkSub = _connectivityService.networkStatusStream.listen((status) {
+      if (!mounted) return;
+      setState(() {
+        _isOnline = status == NetworkStatus.online;
+      });
+    });
+
+    await _loadDashboardData();
+
+    if (_isOnline) {
+      await _triggerSync(showLoader: false);
+    }
+  }
+
+  Future<void> _loadDashboardData() async {
+    final user = await _isar.userCollections.where().findFirst();
+    final currentUserBackendId = user?.backendId;
+
+    final syncMeta = await _isar.syncMetadataCollections
+        .filter()
+        .entityTypeEqualTo('GLOBAL')
+        .findFirst();
+
+    final commandes = await _isar.bonCommandeCollections.where().findAll();
+    final replenish = await _isar.bonReplenishmentCollections.where().findAll();
+    final picking = await _isar.bonPickingCollections.where().findAll();
+    final livraison = await _isar.bonLivraisonCollections.where().findAll();
+
+    final current = <_TaskCardData>[];
+    final remaining = <_TaskCardData>[];
+    final completed = <_TaskCardData>[];
+
+    bool belongsToCurrentUser(String? employeeId) {
+      if (currentUserBackendId == null || currentUserBackendId.isEmpty) {
+        return true;
       }
-    } catch (e) {
-      print('❌ [Dashboard] Error loading user: $e');
-      // Redirect to login on error
-      if (mounted) {
-        Navigator.of(context).pushNamedAndRemoveUntil(
-          AppRoutes.login,
-          (route) => false,
-        );
+      return employeeId == currentUserBackendId;
+    }
+
+    for (final item in commandes) {
+      if (!belongsToCurrentUser(item.employeeId)) continue;
+      final task = _taskFromCommande(item);
+      if (item.status == BonCommandeStatus.inProgress) {
+        current.add(task);
+      } else if (item.status == BonCommandeStatus.completed) {
+        completed.add(task);
+      } else {
+        remaining.add(task);
       }
     }
+
+    for (final item in replenish) {
+      if (!belongsToCurrentUser(item.employeeId)) continue;
+      final task = _taskFromReplenishment(item);
+      if (item.status == BonReplenishmentStatus.inProgress) {
+        current.add(task);
+      } else if (item.status == BonReplenishmentStatus.completed) {
+        completed.add(task);
+      } else {
+        remaining.add(task);
+      }
+    }
+
+    for (final item in picking) {
+      if (!belongsToCurrentUser(item.employeeId)) continue;
+      final task = _taskFromPicking(item);
+      if (item.status == BonPickingStatus.inProgress) {
+        current.add(task);
+      } else if (item.status == BonPickingStatus.completed) {
+        completed.add(task);
+      } else {
+        remaining.add(task);
+      }
+    }
+
+    for (final item in livraison) {
+      if (!belongsToCurrentUser(item.employeeId)) continue;
+      final task = _taskFromLivraison(item);
+      if (item.status == BonLivraisonStatus.inProgress) {
+        current.add(task);
+      } else if (item.status == BonLivraisonStatus.done) {
+        completed.add(task);
+      } else {
+        remaining.add(task);
+      }
+    }
+
+    current.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    remaining.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    completed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    if (!mounted) return;
+    setState(() {
+      _currentUserBackendId = currentUserBackendId;
+      _employeeName = user?.fullName ?? 'Employee';
+      _employeeId = user?.backendId ?? (user?.id.toString() ?? '-');
+      _lastSync = _formatSyncDate(syncMeta?.lastPullAt ?? syncMeta?.lastPushAt);
+
+      _currentTask = current.isNotEmpty ? current.first : null;
+
+      _remainingTasks
+        ..clear()
+        ..addAll(current.skip(1))
+        ..addAll(remaining);
+
+      _completedTasks
+        ..clear()
+        ..addAll(completed);
+
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _triggerSync({bool showLoader = true}) async {
+    if (_isSyncing || !_isOnline) return;
+
+    if (mounted) {
+      setState(() {
+        _isSyncing = true;
+        if (showLoader) {
+          _isLoading = true;
+        }
+      });
+    }
+
+    try {
+      await _syncService.pushChanges();
+      await _syncService.pullChanges();
+      await _loadDashboardData();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync failed. Please retry.')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  String _formatSyncDate(DateTime? value) {
+    if (value == null) return 'Never';
+    final now = DateTime.now();
+    final delta = now.difference(value);
+    if (delta.inMinutes < 1) return 'now';
+    if (delta.inHours < 1) return '${delta.inMinutes}m ago';
+    if (delta.inDays < 1) return '${delta.inHours}h ago';
+    return '${delta.inDays}d ago';
+  }
+
+  String _taskCode({
+    String? backendId,
+    required int localId,
+    required TaskType type,
+  }) {
+    final raw = backendId != null && backendId.isNotEmpty
+        ? backendId.replaceAll('-', '').toUpperCase()
+        : localId.toString().padLeft(4, '0');
+
+    final prefix = switch (type) {
+      TaskType.receipt => 'RC',
+      TaskType.storage => 'ST',
+      TaskType.picking => 'PK',
+      TaskType.delivery => 'DL',
+    };
+
+    return '$prefix${raw.length > 6 ? raw.substring(0, 6) : raw}';
+  }
+
+  _TaskCardData _taskFromCommande(BonCommandeCollection item) {
+    return _TaskCardData(
+      source: _TaskSource.bonCommande,
+      localId: item.id,
+      backendId: item.backendId,
+      createdAt: item.createdAt,
+      type: TaskType.receipt,
+      code: _taskCode(
+        backendId: item.backendId,
+        localId: item.id,
+        type: TaskType.receipt,
+      ),
+      floor: 'Warehouse ${item.warehouseId}',
+      zoneOrSlotLabel: 'Order',
+      zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
+      skuCount: item.totalQuantityExpected,
+    );
+  }
+
+  _TaskCardData _taskFromReplenishment(BonReplenishmentCollection item) {
+    return _TaskCardData(
+      source: _TaskSource.bonReplenishment,
+      localId: item.id,
+      backendId: item.backendId,
+      createdAt: item.createdAt,
+      type: TaskType.storage,
+      code: _taskCode(
+        backendId: item.backendId,
+        localId: item.id,
+        type: TaskType.storage,
+      ),
+      floor: 'Warehouse ${item.warehouseId}',
+      zoneOrSlotLabel: 'Order',
+      zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
+      skuCount: 0,
+    );
+  }
+
+  _TaskCardData _taskFromPicking(BonPickingCollection item) {
+    return _TaskCardData(
+      source: _TaskSource.bonPicking,
+      localId: item.id,
+      backendId: item.backendId,
+      createdAt: item.createdAt,
+      type: TaskType.picking,
+      code: _taskCode(
+        backendId: item.backendId,
+        localId: item.id,
+        type: TaskType.picking,
+      ),
+      floor: 'Warehouse ${item.warehouseId}',
+      zoneOrSlotLabel: 'Order',
+      zoneOrSlotValue: item.backendId ?? 'Local-${item.id}',
+      skuCount: 0,
+    );
+  }
+
+  _TaskCardData _taskFromLivraison(BonLivraisonCollection item) {
+    return _TaskCardData(
+      source: _TaskSource.bonLivraison,
+      localId: item.id,
+      backendId: item.backendId,
+      createdAt: item.createdAt,
+      type: TaskType.delivery,
+      code: _taskCode(
+        backendId: item.backendId,
+        localId: item.id,
+        type: TaskType.delivery,
+      ),
+      floor: 'Warehouse ${item.warehouseId}',
+      zoneOrSlotLabel: 'Delivery',
+      zoneOrSlotValue: item.deliveryId,
+      skuCount: 0,
+    );
+  }
+
+  SyncOperationType _operationForTask(TaskType type) {
+    return switch (type) {
+      TaskType.receipt => SyncOperationType.pushBonCommande,
+      TaskType.storage => SyncOperationType.pushBonReplenishment,
+      TaskType.picking => SyncOperationType.pushBonPicking,
+      TaskType.delivery => SyncOperationType.pushBonLivraison,
+    };
+  }
+
+  Future<void> _enqueueTaskSync(
+    _TaskCardData task, {
+    required String action,
+    Map<String, dynamic>? extra,
+    int priority = 6,
+  }) async {
+    final payload = {
+      'id': task.backendId ?? task.localId.toString(),
+      'local_id': task.localId,
+      'action': action,
+      'updated_at': DateTime.now().toIso8601String(),
+      ...?extra,
+    };
+
+    final queueItem = SyncQueueCollection.create(
+      queueId: _uuid.v4(),
+      operationType: _operationForTask(task.type),
+      dataJson: jsonEncode(payload),
+      createdAt: DateTime.now(),
+      priority: priority,
+    );
+
+    await _isar.writeTxn(() async {
+      await _isar.syncQueueCollections.put(queueItem);
+    });
+  }
+
+  Future<void> _markTaskInProgress(_TaskCardData task) async {
+    await _isar.writeTxn(() async {
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonCommandeStatus.inProgress;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.inProgress;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.inProgress;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.inProgress;
+          entity.updatedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonLivraisonCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(task, action: 'IN_PROGRESS', priority: 8);
+  }
+
+  Future<void> _markTaskCompleted(_TaskCardData task) async {
+    await _isar.writeTxn(() async {
+      switch (task.source) {
+        case _TaskSource.bonCommande:
+          final entity = await _isar.bonCommandeCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonCommandeStatus.completed;
+          entity.updatedAt = DateTime.now();
+          entity.completedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonCommandeCollections.put(entity);
+        case _TaskSource.bonReplenishment:
+          final entity = await _isar.bonReplenishmentCollections.get(
+            task.localId,
+          );
+          if (entity == null) return;
+          entity.status = BonReplenishmentStatus.completed;
+          entity.updatedAt = DateTime.now();
+          entity.completedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonReplenishmentCollections.put(entity);
+        case _TaskSource.bonPicking:
+          final entity = await _isar.bonPickingCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonPickingStatus.completed;
+          entity.updatedAt = DateTime.now();
+          entity.completedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonPickingCollections.put(entity);
+        case _TaskSource.bonLivraison:
+          final entity = await _isar.bonLivraisonCollections.get(task.localId);
+          if (entity == null) return;
+          entity.status = BonLivraisonStatus.done;
+          entity.updatedAt = DateTime.now();
+          entity.completedAt = DateTime.now();
+          entity.syncStatus = false;
+          await _isar.bonLivraisonCollections.put(entity);
+      }
+    });
+
+    await _enqueueTaskSync(task, action: 'COMPLETED', priority: 9);
+  }
+
+  Future<void> _queueTaskReport(_TaskCardData task, List<String> issues) async {
+    await _enqueueTaskSync(
+      task,
+      action: 'REPORT',
+      priority: 10,
+      extra: {'issues': issues},
+    );
   }
 
   @override
@@ -135,34 +444,45 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     final textTheme = Theme.of(context).textTheme;
     final stats = _buildShiftStats();
 
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF1F5F9),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F9),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeader(textTheme),
-              const SizedBox(height: 20),
-              Text(
-                "Today's Shift",
-                style: GoogleFonts.manrope(
-                  textStyle: textTheme.titleMedium,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.black,
+        child: RefreshIndicator(
+          onRefresh: () => _triggerSync(),
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(textTheme),
+                const SizedBox(height: 20),
+                Text(
+                  "Today's Shift",
+                  style: GoogleFonts.manrope(
+                    textStyle: textTheme.titleMedium,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              _buildShiftTabs(textTheme, stats),
-              const SizedBox(height: 20),
-              if (_activeTabIndex == 0)
-                _buildCurrentTask(textTheme)
-              else if (_activeTabIndex == 1)
-                _buildCompletedTasks(textTheme)
-              else
-                _buildRemainingTasks(textTheme),
-            ],
+                const SizedBox(height: 16),
+                _buildShiftTabs(textTheme, stats),
+                const SizedBox(height: 20),
+                if (_activeTabIndex == 0)
+                  _buildCurrentTask(textTheme)
+                else if (_activeTabIndex == 1)
+                  _buildCompletedTasks(textTheme)
+                else
+                  _buildRemainingTasks(textTheme),
+              ],
+            ),
           ),
         ),
       ),
@@ -200,6 +520,17 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+              icon: _isSyncing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.sync, size: 20),
+            ),
             Row(
               children: [
                 Container(
@@ -240,7 +571,8 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
   List<_ShiftStat> _buildShiftStats() {
     final currentCount = _currentTask == null ? 0 : 1;
-    final totalTasks = _remainingTasks.length + _completedTasks.length + currentCount;
+    final totalTasks =
+        _remainingTasks.length + _completedTasks.length + currentCount;
     return [
       _ShiftStat(label: 'Tasks', value: totalTasks),
       _ShiftStat(label: 'Completed', value: _completedTasks.length),
@@ -267,8 +599,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                   color: isActive ? Colors.white : const Color(0xFFE2E8F0),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color:
-                        isActive ? const Color(0xFF3C91CC) : Colors.transparent,
+                    color: isActive
+                        ? const Color(0xFF3C91CC)
+                        : Colors.transparent,
                     width: 1.4,
                   ),
                   boxShadow: isActive
@@ -334,7 +667,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
           _TaskCard(
             data: currentTask,
             showDualActions: true,
-            onValidate: _completeCurrentTask,
+            onValidate: () {
+              _completeCurrentTask();
+            },
             onReport: () => _showReportSheet(currentTask),
           ),
       ],
@@ -362,7 +697,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
               padding: const EdgeInsets.only(bottom: 16),
               child: _TaskCard(
                 data: task,
-                onStart: () => _handleStartTask(task),
+                onStart: () {
+                  _handleStartTask(task);
+                },
               ),
             ),
           ),
@@ -391,10 +728,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
             ..._completedTasks.map(
               (task) => Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: _TaskCard(
-                  data: task,
-                  showCompleted: true,
-                ),
+                child: _TaskCard(data: task, showCompleted: true),
               ),
             ),
         ],
@@ -427,16 +761,11 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     );
   }
 
-  void _handleStartTask(_TaskCardData task) {
+  Future<void> _handleStartTask(_TaskCardData task) async {
     final shouldShowSheet = task.type != TaskType.receipt;
-    _startTask(task);
 
-    if (shouldShowSheet) {
-      _showTaskActionSheet(task);
-    }
-  }
+    await _markTaskInProgress(task);
 
-  void _startTask(_TaskCardData task) {
     setState(() {
       _remainingTasks.remove(task);
       if (_currentTask != null) {
@@ -444,17 +773,28 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       }
       _currentTask = task;
     });
+
+    if (shouldShowSheet) {
+      await _showTaskActionSheet(task);
+    }
+
+    await _triggerSync(showLoader: false);
   }
 
-  void _completeCurrentTask() {
+  Future<void> _completeCurrentTask() async {
     if (_currentTask == null) {
       return;
     }
 
+    final taskToComplete = _currentTask!;
+    await _markTaskCompleted(taskToComplete);
+
     setState(() {
-      _completedTasks.insert(0, _currentTask!);
+      _completedTasks.insert(0, taskToComplete);
       _currentTask = null;
     });
+
+    await _triggerSync(showLoader: false);
   }
 
   Future<void> _showTaskActionSheet(_TaskCardData task) async {
@@ -473,9 +813,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
             return Container(
               decoration: const BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(24),
-                ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
               ),
               child: Column(
                 children: [
@@ -514,10 +852,10 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                       children: [
                         Expanded(
                           child: ElevatedButton.icon(
-                              onPressed: () {
-                                Navigator.of(context).pop();
-                                _showReportSheet(task);
-                              },
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              _showReportSheet(task);
+                            },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFFDC2626),
                               foregroundColor: Colors.white,
@@ -552,7 +890,10 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                             ),
-                            icon: const Icon(Icons.check_circle_outline, size: 18),
+                            icon: const Icon(
+                              Icons.check_circle_outline,
+                              size: 18,
+                            ),
                             label: Text(
                               'Validate',
                               style: GoogleFonts.manrope(
@@ -594,9 +935,7 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
             return Container(
               decoration: const BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(24),
-                ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
               ),
               child: Column(
                 children: [
@@ -637,7 +976,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                             children: [
                               for (final option in options)
                                 Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 6),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 6,
+                                  ),
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(12),
                                     onTap: () {
@@ -658,7 +999,9 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                                             color: selected.contains(option)
                                                 ? const Color(0xFFDC2626)
                                                 : Colors.transparent,
-                                            borderRadius: BorderRadius.circular(6),
+                                            borderRadius: BorderRadius.circular(
+                                              6,
+                                            ),
                                             border: Border.all(
                                               color: const Color(0xFFCBD5E1),
                                               width: 2,
@@ -700,7 +1043,24 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton.icon(
-                            onPressed: () {},
+                            onPressed: selected.isEmpty
+                                ? null
+                                : () async {
+                                    await _queueTaskReport(
+                                      task,
+                                      selected.toList(),
+                                    );
+                                    if (!mounted) return;
+                                    Navigator.of(context).pop();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Report queued for sync.',
+                                        ),
+                                      ),
+                                    );
+                                    await _triggerSync(showLoader: false);
+                                  },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFFDC2626),
                               foregroundColor: Colors.white,
@@ -853,11 +1213,7 @@ class _TaskCard extends StatelessWidget {
                     color: Colors.white.withOpacity(0.9),
                     shape: BoxShape.circle,
                   ),
-                  child: Icon(
-                    data.type.icon,
-                    size: 16,
-                    color: typeColor,
-                  ),
+                  child: Icon(data.type.icon, size: 16, color: typeColor),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -917,11 +1273,7 @@ class _TaskCard extends StatelessWidget {
                     color: const Color(0xFFF1F5F9),
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(
-                    data.type.icon,
-                    size: 40,
-                    color: typeColor,
-                  ),
+                  child: Icon(data.type.icon, size: 40, color: typeColor),
                 ),
               ],
             ),
@@ -965,7 +1317,10 @@ class _TaskCard extends StatelessWidget {
                               borderRadius: BorderRadius.circular(12),
                             ),
                           ),
-                          icon: const Icon(Icons.check_circle_outline, size: 18),
+                          icon: const Icon(
+                            Icons.check_circle_outline,
+                            size: 18,
+                          ),
                           label: Text(
                             'Validate',
                             style: GoogleFonts.manrope(
@@ -983,10 +1338,12 @@ class _TaskCard extends StatelessWidget {
                     child: ElevatedButton(
                       onPressed: showCompleted ? null : onStart,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor:
-                            showCompleted ? const Color(0xFFE2E8F0) : typeColor,
-                        foregroundColor:
-                            showCompleted ? const Color(0xFF64748B) : Colors.white,
+                        backgroundColor: showCompleted
+                            ? const Color(0xFFE2E8F0)
+                            : typeColor,
+                        foregroundColor: showCompleted
+                            ? const Color(0xFF64748B)
+                            : Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -1060,13 +1417,22 @@ class _ShiftStat {
 
 class _TaskCardData {
   const _TaskCardData({
+    required this.source,
+    required this.localId,
+    required this.createdAt,
     required this.type,
     required this.code,
     required this.floor,
     required this.zoneOrSlotLabel,
     required this.zoneOrSlotValue,
     required this.skuCount,
+    this.backendId,
   });
+
+  final _TaskSource source;
+  final int localId;
+  final String? backendId;
+  final DateTime createdAt;
 
   final TaskType type;
   final String code;
@@ -1075,6 +1441,8 @@ class _TaskCardData {
   final String zoneOrSlotValue;
   final int skuCount;
 }
+
+enum _TaskSource { bonCommande, bonReplenishment, bonPicking, bonLivraison }
 
 enum TaskType { receipt, storage, picking, delivery }
 
