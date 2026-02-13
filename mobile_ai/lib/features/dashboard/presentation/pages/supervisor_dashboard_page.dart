@@ -536,6 +536,15 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
       }
     }
 
+    final aiTransfer = _extractAiTransferDecisionFromNotes(task.notes);
+    final aiFloor = aiTransfer?['floor'];
+    final aiZone = aiTransfer?['zone']?.toString();
+    final aiLocation = aiTransfer?['location_code']?.toString();
+    final aiRoute = _routePreview(aiTransfer?['optimized_path']);
+    if (aiRoute != null) {
+      issues.add('Route: $aiRoute');
+    }
+
     // Map EmployeeTaskType to TaskType
     TaskType taskType;
     switch (task.taskType) {
@@ -566,12 +575,50 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
         localId: task.id,
         type: taskType,
       ),
-      floor: 'Various',
-      zoneOrSlotLabel: 'Task',
-      zoneOrSlotValue: task.title ?? 'Untitled',
+      floor: _aiFloorLabel(aiFloor),
+      zoneOrSlotLabel: (aiZone != null || aiLocation != null) ? 'Zone / Place' : 'Task',
+      zoneOrSlotValue: (aiZone != null || aiLocation != null)
+          ? [if (aiZone != null && aiZone.isNotEmpty) aiZone, if (aiLocation != null && aiLocation.isNotEmpty) aiLocation].join(' • ')
+          : (task.title ?? 'Untitled'),
       skuCount: task.itemsCount ?? 0,
       issues: issues,
     );
+  }
+
+  Map<String, dynamic>? _extractAiTransferDecisionFromNotes(String? notes) {
+    if (notes == null || notes.isEmpty) return null;
+    final line = notes
+        .split('\n')
+        .map((value) => value.trim())
+        .firstWhere(
+          (value) => value.startsWith('AI_TRANSFER_DECISION:'),
+          orElse: () => '',
+        );
+    if (line.isEmpty) return null;
+
+    final payload = line.replaceFirst('AI_TRANSFER_DECISION:', '').trim();
+    if (payload.isEmpty) return null;
+
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
+  }
+
+  String _aiFloorLabel(dynamic floor) {
+    if (floor == null) return 'Various';
+    final level = int.tryParse(floor.toString());
+    if (level == null) return floor.toString();
+    if (level == 0) return 'Ground (0)';
+    return 'Floor $level';
+  }
+
+  String? _routePreview(dynamic routeValue) {
+    if (routeValue is! List) return null;
+    final route = routeValue.map((node) => node.toString()).where((node) => node.isNotEmpty).toList();
+    if (route.isEmpty) return null;
+    return route.join(' → ');
   }
 
   _TaskCardData _taskFromReport(
@@ -1232,7 +1279,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
   }
 
   Widget _buildHeader(TextTheme textTheme) {
-    final isOnlineNow = _isOnline && _connectivityService.isOnline;
+    final isOnlineNow = _isOnline;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,

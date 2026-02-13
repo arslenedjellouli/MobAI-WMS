@@ -373,6 +373,18 @@ class SyncService {
     task.itemsCompleted = (json['items_completed'] as num?)?.toInt() ?? 0;
     task.estimatedDurationMinutes = (json['estimated_duration_minutes'] as num?)?.toInt();
     task.notes = json['notes'];
+    if (json['ai_transfer_decision'] is Map<String, dynamic>) {
+      task.notes = _upsertAiTransferDecisionNote(
+        task.notes,
+        json['ai_transfer_decision'] as Map<String, dynamic>,
+      );
+    }
+    if (json['ai_transfer_override'] is Map<String, dynamic>) {
+      task.notes = _upsertAiTransferOverrideNote(
+        task.notes,
+        json['ai_transfer_override'] as Map<String, dynamic>,
+      );
+    }
     task.bonReferenceType = json['bon_reference_type'];
     task.bonReferenceId = json['bon_reference_id'];
     task.updatedAt = _parseDateTime(json['updated_at']) ?? DateTime.now();
@@ -477,6 +489,36 @@ class SyncService {
     } catch (_) {
       return null;
     }
+  }
+
+  String _upsertAiTransferDecisionNote(
+    String? existingNotes,
+    Map<String, dynamic> decision,
+  ) {
+    final lines = (existingNotes ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !line.startsWith('AI_TRANSFER_DECISION:'))
+        .toList();
+
+    lines.add('AI_TRANSFER_DECISION:${jsonEncode(decision)}');
+    return lines.join('\n');
+  }
+
+  String _upsertAiTransferOverrideNote(
+    String? existingNotes,
+    Map<String, dynamic> override,
+  ) {
+    final lines = (existingNotes ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !line.startsWith('AI_TRANSFER_OVERRIDE:'))
+        .toList();
+
+    lines.add('AI_TRANSFER_OVERRIDE:${jsonEncode(override)}');
+    return lines.join('\n');
   }
 
   String _mapOperationToEntityType(SyncOperationType type) {
