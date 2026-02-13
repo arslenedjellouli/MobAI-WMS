@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'package:mobile_ai/features/dashboard/presentation/pages/employee_dashboard_page.dart';
+import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
+import 'package:mobile_ai/features/auth/presentation/pages/access_help_page.dart';
+import 'package:mobile_ai/features/auth/presentation/pages/pin_locked_page.dart';
 
 // TODO: Import pages as they are created
 // import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
@@ -11,6 +14,8 @@ class AppRoutes {
   // Auth Routes
   static const String splash = '/';
   static const String login = '/login';
+  static const String authHelp = '/login/help';
+  static const String pinLocked = '/login/pin-locked';
 
   // Dashboard Routes
   static const String dashboard = '/dashboard';
@@ -80,7 +85,17 @@ class AppRoutes {
 
       case login:
         return MaterialPageRoute(
-          builder: (_) => _placeholder('Login', 'Enter credentials'),
+          builder: (_) => const LoginPage(),
+        );
+
+      case authHelp:
+        return MaterialPageRoute(
+          builder: (_) => const AccessHelpPage(),
+        );
+
+      case pinLocked:
+        return MaterialPageRoute(
+          builder: (_) => const PinLockedPage(),
         );
 
       case dashboard:

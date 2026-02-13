@@ -5,6 +5,7 @@ import 'package:isar/isar.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/errors/failures.dart';
+import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
 
 abstract class AuthRepository {
   Future<Either<Failure, UserCollection>> login(String username, String password);
@@ -32,21 +33,28 @@ class AuthRepositoryImpl implements AuthRepository {
       final userData = result['user'] as Map<String, dynamic>?;
 
       if (token == null || userData == null) {
-        return Left(ServerFailure(message: 'Invalid response from server'));
+        return Left(ServerFailure('Invalid response from server'));
       }
 
       // 2. Save Token
       await storage.write(key: 'auth_token', value: token);
 
       // 3. Save User to Isar
+      final fullName = (userData['full_name'] as String?)?.trim().isNotEmpty == true
+          ? userData['full_name'] as String
+          : [userData['first_name'], userData['last_name']]
+              .whereType<String>()
+              .where((value) => value.trim().isNotEmpty)
+              .join(' ')
+              .trim();
+
       final user = UserCollection.create(
-        backendId: userData['id']?.toString(), // Ensure String
+        backendId: userData['id']?.toString(),
         email: userData['email'] ?? '',
-        username: userData['username'] ?? '',
-        firstName: userData['first_name'],
-        lastName: userData['last_name'],
-        role: _parseRole(userData['role']),
-        isActive: userData['is_active'] ?? true,
+        fullName: fullName.isEmpty ? 'User' : fullName,
+        role: _parseRole(userData['role'] as String?),
+        status:
+            (userData['is_active'] ?? true) ? UserStatus.active : UserStatus.disabled,
         createdAt: DateTime.now(),
       );
 
@@ -59,7 +67,7 @@ class AuthRepositoryImpl implements AuthRepository {
 
       return Right(user);
     } catch (e) {
-      return Left(ServerFailure(message: e.toString()));
+      return Left(ServerFailure(e.toString()));
     }
   }
 
@@ -73,7 +81,7 @@ class AuthRepositoryImpl implements AuthRepository {
       });
       return const Right(null);
     } catch (e) {
-      return Left(CacheFailure(message: e.toString()));
+      return Left(CacheFailure(e.toString()));
     }
   }
 
@@ -84,17 +92,20 @@ class AuthRepositoryImpl implements AuthRepository {
       final user = await isar.userCollections.where().findFirst();
       return Right(user);
     } catch (e) {
-      return Left(CacheFailure(message: e.toString()));
+      return Left(CacheFailure(e.toString()));
     }
   }
   
   UserRole _parseRole(String? role) {
     // Map string to enum
     switch (role?.toUpperCase()) {
-      case 'ADMIN': return UserRole.admin;
-      case 'MANAGER': return UserRole.manager;
-      case 'OPERATOR': return UserRole.operator;
-      default: return UserRole.operator;
+      case 'ADMIN':
+        return UserRole.admin;
+      case 'SUPERVISOR':
+        return UserRole.supervisor;
+      case 'EMPLOYEE':
+      default:
+        return UserRole.employee;
     }
   }
 }

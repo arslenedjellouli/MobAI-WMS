@@ -59,19 +59,7 @@ class SyncService {
       final deviceId = await getDeviceId();
       final isar = _db.isar;
 
-      // 1. Get pending items
-      final pendingItems = await isar.syncQueueCollections
-          .filter()
-          .apiIdEqualTo(null) // Unsynced
-          .and()
-          .statusEqualTo(SyncQueueStatus.pending)
-          .findAll();
-
-      // Better query: status PENDING or FAILED (retry)
-      // Note: Filter API might differ slightly based on generated code helpers
-      // Using manual predicate for clarity if needed, but standard helpers preferred.
-      
-      // Let's rely on standard query for now
+        // 1. Get pending items (pending or failed for retry)
       final itemsToPush = await isar.syncQueueCollections
           .filter()
           .statusEqualTo(SyncQueueStatus.pending)
@@ -109,8 +97,7 @@ class SyncService {
 
         // 4. Update local status based on response
         if (response.statusCode == 200 || response.statusCode == 201) {
-          final result = response.data;
-          // Ideally parse result['created_items'] and result['errors']
+          // Response contains created_items and errors
           
           await isar.writeTxn(() async {
             for (final item in itemsToPush) {
