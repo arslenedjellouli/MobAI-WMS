@@ -1,15 +1,100 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:isar/isar.dart';
 
-class AdminDashboardPage extends StatelessWidget {
+import 'package:mobile_ai/config/di/injection_container.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
+import 'package:mobile_ai/core/database/isar_database.dart';
+import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_commande_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_livraison_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/bons/bon_replenishment_item_collection.dart';
+import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/floor_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/section_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/slot_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/warehouse_collection.dart';
+import 'package:mobile_ai/core/database/models/warehouse/zone_collection.dart';
+import 'package:mobile_ai/core/network/network_service.dart';
+import 'package:mobile_ai/core/services/connectivity_service.dart';
+import 'package:mobile_ai/core/services/sync_service.dart';
+import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
+import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
+
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
 
   @override
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+  final Isar _isar = sl<IsarDatabase>().isar;
+  final ApiClient _apiClient = sl<ApiClient>();
+  final SyncService _syncService = sl<SyncService>();
+  final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final FloorRemoteDatasource _floorRemoteDatasource =
+      FloorRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+  final WarehouseRemoteDatasource _warehouseRemoteDatasource =
+      WarehouseRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+  final ChariotRemoteDatasource _chariotRemoteDatasource =
+      ChariotRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+
+  bool _isLoading = true;
+  bool _isOnline = false;
+
+  String _adminName = 'Administrator';
+  String? _adminWarehouseId;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializePage();
+  }
+
+  Future<void> _initializePage() async {
+    final user = await _isar.userCollections.where().findFirst();
+    final isOnline = await _connectivityService.checkConnection();
+
+    if (!mounted) return;
+    setState(() {
+      _adminName = user?.fullName ?? 'Administrator';
+      _adminWarehouseId = user?.warehouseId;
+      _isOnline = isOnline;
+      _isLoading = false;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Mock user data
-    const String adminName = "Arslene"; // Or fetch from auth
-    const String adminRole = "Administrator";
+    final textTheme = Theme.of(context).textTheme;
+    
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC), // Slate-50
@@ -20,7 +105,7 @@ class AdminDashboardPage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // 1. Header Section
-              _buildHeader(context, adminName, adminRole),
+              _buildHeader(context, _adminName, "Administrator"),
               const SizedBox(height: 24),
 
               // 2. AI Performance Slider
@@ -160,13 +245,27 @@ class AdminDashboardPage extends StatelessWidget {
         icon: Icons.rate_review_outlined,
         label: "Review AI Orders",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AdminReviewAiOrdersPage(),
+            ),
+          );
+        },
       ),
       _ActionItem(
         icon: Icons.remove_red_eye_outlined,
         label: "Monitor Warehouses",
         color: iconColor,
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AdminMonitorPage(),
+            ),
+          );
+        },
       ),
     ];
 
