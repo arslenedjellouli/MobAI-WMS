@@ -13,6 +13,7 @@ import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart'
 import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
 import 'package:mobile_ai/core/database/models/inventory/stock_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 
 class SyncService {
   final ApiClient _apiClient;
@@ -230,6 +231,16 @@ class SyncService {
     } else {
       _logger.w('⚠️ No employee_tasks key in sync response entities');
     }
+
+    // Process Task Reports
+    if (entities.containsKey('task_reports')) {
+      final list = entities['task_reports'] as List;
+      _logger.i('📥 Processing ${list.length} task reports from sync');
+      for (var json in list) {
+        await _syncTaskReport(json, isar);
+      }
+      _logger.i('✅ Finished processing ${list.length} task reports');
+    }
     
     // Add logic for SKUs, Locations, etc. here
   }
@@ -371,6 +382,51 @@ class SyncService {
     await isar.employeeTaskCollections.put(task);
     _logger.i('✅ Saved task: ${task.title} (assigned to: ${task.assignedToUserId})');
   }
+
+    Future<void> _syncTaskReport(Map<String, dynamic> json, Isar isar) async {
+    final backendId = json['id']?.toString();
+    if (backendId == null || backendId.isEmpty) return;
+
+    final existing = await isar.taskReportCollections
+      .filter()
+      .backendIdEqualTo(backendId)
+      .findFirst();
+
+    final report = existing ?? TaskReportCollection();
+    report.backendId = backendId;
+    report.taskId = (json['task'] is Map)
+      ? json['task']['id']?.toString()
+      : json['task_id']?.toString();
+    report.taskTitle = (json['task'] is Map) ? json['task']['title']?.toString() : null;
+    report.reportedById = (json['reported_by'] is Map)
+      ? json['reported_by']['id']?.toString()
+      : json['reported_by_id']?.toString();
+    report.reportedByName = (json['reported_by'] is Map)
+      ? json['reported_by']['full_name']?.toString()
+      : json['reported_by_name']?.toString();
+    report.reportedByEmail = (json['reported_by'] is Map)
+      ? json['reported_by']['email']?.toString()
+      : json['reported_by_email']?.toString();
+    report.supervisorId = (json['supervisor'] is Map)
+      ? json['supervisor']['id']?.toString()
+      : json['supervisor_id']?.toString();
+    report.supervisorName = (json['supervisor'] is Map)
+      ? json['supervisor']['full_name']?.toString()
+      : json['supervisor_name']?.toString();
+    report.issues =
+      (json['issues'] as List<dynamic>?)?.map((item) => item.toString()).toList() ?? [];
+    report.description = json['description']?.toString();
+    report.status = _parseTaskReportStatus(json['status']?.toString());
+    report.reportedAt = _parseDateTime(json['reported_at']?.toString()) ?? DateTime.now();
+    report.acknowledgedAt = _parseDateTime(json['acknowledged_at']?.toString());
+    report.resolvedAt = _parseDateTime(json['resolved_at']?.toString());
+    report.supervisorNotes = json['supervisor_notes']?.toString();
+    report.createdAt = _parseDateTime(json['created_at']?.toString()) ?? report.reportedAt;
+    report.updatedAt = _parseDateTime(json['updated_at']?.toString()) ?? DateTime.now();
+    report.syncStatus = true;
+
+    await isar.taskReportCollections.put(report);
+    }
   
   BonPickingStatus _parseStatus(String? status) {
      switch (status?.toUpperCase()) {
@@ -400,6 +456,17 @@ class SyncService {
       case 'COMPLETED': return EmployeeTaskStatus.completed;
       case 'CANCELLED': return EmployeeTaskStatus.cancelled;
       default: return EmployeeTaskStatus.pending;
+    }
+  }
+
+  TaskReportStatus _parseTaskReportStatus(String? status) {
+    switch (status?.toUpperCase()) {
+      case 'ACKNOWLEDGED':
+        return TaskReportStatus.acknowledged;
+      case 'RESOLVED':
+        return TaskReportStatus.resolved;
+      default:
+        return TaskReportStatus.pending;
     }
   }
 
