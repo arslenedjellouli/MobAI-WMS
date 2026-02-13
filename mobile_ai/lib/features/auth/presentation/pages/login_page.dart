@@ -58,10 +58,12 @@ class _LoginPageState extends State<LoginPage> {
     final password = _passwordController.text;
     
     print('🚀 [LoginPage] Attempting login with email: $email');
+    print('💾 [LoginPage] Remember Me: $_rememberMe');
     
     final result = await _authRepository.login(
       email,
       password,
+      rememberMe: _rememberMe,
     );
 
     setState(() => _isLoading = false);

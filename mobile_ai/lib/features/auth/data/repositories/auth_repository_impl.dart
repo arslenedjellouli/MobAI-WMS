@@ -8,7 +8,7 @@ import 'package:mobile_ai/core/errors/failures.dart';
 import 'package:mobile_ai/features/auth/data/datasources/auth_remote_datasource.dart';
 
 abstract class AuthRepository {
-  Future<Either<Failure, UserCollection>> login(String email, String password);
+  Future<Either<Failure, UserCollection>> login(String email, String password, {bool rememberMe = false});
   Future<Either<Failure, void>> logout();
   Future<Either<Failure, UserCollection?>> getCurrentUser();
 }
@@ -25,9 +25,9 @@ class AuthRepositoryImpl implements AuthRepository {
   });
 
   @override
-  Future<Either<Failure, UserCollection>> login(String email, String password) async {
+  Future<Either<Failure, UserCollection>> login(String email, String password, {bool rememberMe = false}) async {
     try {
-      print('🔐 [AuthRepository] Starting login for: $email');
+      print('🔐 [AuthRepository] Starting login for: $email (Remember Me: $rememberMe)');
       
       // 1. Call API
       final result = await remoteDataSource.login(email, password);
@@ -45,15 +45,26 @@ class AuthRepositoryImpl implements AuthRepository {
         return Left(ServerFailure('Invalid response from server'));
       }
 
-      // 2. Save Access Token to SecureStorage
-      try {
-        await storage.write(key: 'auth_token', value: token);
-        if (refreshToken != null) {
-          await storage.write(key: 'refresh_token', value: refreshToken);
+      // 2. Save Access Token to SecureStorage ONLY if rememberMe is true
+      if (rememberMe) {
+        try {
+          await storage.write(key: 'auth_token', value: token);
+          if (refreshToken != null) {
+            await storage.write(key: 'refresh_token', value: refreshToken);
+          }
+          print('✅ [AuthRepository] Tokens saved to SecureStorage (Remember Me enabled)');
+        } catch (e) {
+          print('⚠️ [AuthRepository] Failed to save tokens to SecureStorage: $e');
         }
-        print('✅ [AuthRepository] Tokens saved to SecureStorage');
-      } catch (e) {
-        print('⚠️ [AuthRepository] Failed to save tokens to SecureStorage: $e');
+      } else {
+        // Clear any existing tokens if remember me is not checked
+        try {
+          await storage.delete(key: 'auth_token');
+          await storage.delete(key: 'refresh_token');
+          print('🗑️ [AuthRepository] Tokens cleared from SecureStorage (Remember Me disabled)');
+        } catch (e) {
+          print('⚠️ [AuthRepository] Failed to clear tokens: $e');
+        }
       }
 
       // 3. Create and Save User to Isar
@@ -140,13 +151,21 @@ class AuthRepositoryImpl implements AuthRepository {
       //   // Ignore if sync service not initialized
       // }
 
+      // Clear all tokens from secure storage
       await storage.delete(key: 'auth_token');
+      await storage.delete(key: 'refresh_token');
+      print('🔓 [AuthRepository] Tokens cleared from SecureStorage');
+      
+      // Clear user data from Isar
       final isar = db.isar;
       await isar.writeTxn(() async {
         await isar.userCollections.clear();
       });
+      print('🗑️ [AuthRepository] User data cleared from Isar');
+      
       return const Right(null);
     } catch (e) {
+      print('❌ [AuthRepository] Logout error: $e');
       return Left(CacheFailure(e.toString()));
     }
   }
