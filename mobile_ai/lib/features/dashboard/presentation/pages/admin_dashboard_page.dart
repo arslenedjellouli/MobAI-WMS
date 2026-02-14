@@ -8,7 +8,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:isar/isar.dart';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
-import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
@@ -50,6 +49,11 @@ class AdminDashboardPage extends StatefulWidget {
 }
 
 class _AdminDashboardPageState extends State<AdminDashboardPage> {
+    // AI metrics
+    double _validatedPercent = 0.0;
+    double _overriddenPercent = 0.0;
+    double _avgConfidence = 0.0;
+    double _avgAccuracy = 0.0;
   final Isar _isar = sl<IsarDatabase>().isar;
   final ApiClient _apiClient = sl<ApiClient>();
   final SyncService _syncService = sl<SyncService>();
@@ -175,7 +179,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              name,
+              "Welcome back, $name",
               style: GoogleFonts.inter(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -193,63 +197,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ],
         ),
         const Spacer(),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
-                  icon: _isSyncing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.sync, size: 20),
-                  color: const Color(0xFF64748B),
-                  tooltip: 'Sync',
-                ),
-                IconButton(
-                  onPressed: _handleLogout,
-                  icon: const Icon(Icons.logout, size: 20, color: Colors.red),
-                  tooltip: 'Logout',
-                ),
-              ],
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _isOnline ? Colors.green : Colors.red,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  _isOnline ? 'Online' : 'Offline',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: const Color(0xFF64748B),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  'Last sync: $_lastSync',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: const Color(0xFF94A3B8),
-                  ),
-                ),
-              ],
-            ),
-          ],
+        IconButton(
+          onPressed: () {
+            // TODO: Implement notifications
+          },
+          icon: const Icon(Icons.notifications_outlined),
+          color: const Color(0xFF64748B),
         ),
       ],
     );
@@ -343,7 +296,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             icon: Icons.receipt_long_outlined,
             label: "Logs",
             color: iconColor,
-            onTap: () {},
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminHistoryLogsPage(),
+                ),
+              );
+            },
           ),
           isCentered: true,
           isFullWidth: true,
@@ -409,10 +369,9 @@ class _MetricsCard1 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Mock Data
-    final double validatedPercent = 0.85;
-    final int totalOrders = 1250;
-
+    final state = context.findAncestorStateOfType<_AdminDashboardPageState>();
+    final validatedPercent = state?._validatedPercent ?? 0.0;
+    final overriddenPercent = state?._overriddenPercent ?? 0.0;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 4),
       padding: const EdgeInsets.all(16),
@@ -448,7 +407,7 @@ class _MetricsCard1 extends StatelessWidget {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  "+12% vs last week",
+                  "${((validatedPercent - overriddenPercent) * 100).toStringAsFixed(1)}% diff",
                   style: GoogleFonts.inter(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
@@ -473,7 +432,7 @@ class _MetricsCard1 extends StatelessWidget {
                 ),
               ),
               Expanded(
-                flex: ((1 - validatedPercent) * 100).toInt(),
+                flex: (overriddenPercent * 100).toInt(),
                 child: Container(
                   height: 12,
                   decoration: const BoxDecoration(
@@ -492,7 +451,7 @@ class _MetricsCard1 extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "${(validatedPercent * 100).toInt()}%",
+                    "${(validatedPercent * 100).toStringAsFixed(1)}%",
                     style: GoogleFonts.inter(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -508,11 +467,11 @@ class _MetricsCard1 extends StatelessWidget {
                   ),
                 ],
               ),
-               Column(
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    "${((1 - validatedPercent) * 100).toInt()}%",
+                    "${(overriddenPercent * 100).toStringAsFixed(1)}%",
                     style: GoogleFonts.inter(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -541,6 +500,9 @@ class _MetricsCard2 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = context.findAncestorStateOfType<_AdminDashboardPageState>();
+    final accuracy = state?._avgAccuracy ?? 0.0;
+    final confidence = state?._avgConfidence ?? 0.0;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 4),
       padding: const EdgeInsets.all(16),
@@ -570,9 +532,9 @@ class _MetricsCard2 extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildCircularIndicator("Accuracy", 0.92, const Color(0xFF3B82F6)),
+              _buildCircularIndicator("Accuracy", accuracy, const Color(0xFF3B82F6)),
               Container(width: 1, height: 60, color: const Color(0xFFE2E8F0)),
-              _buildCircularIndicator("Confidence", 0.88, const Color(0xFF8B5CF6)),
+              _buildCircularIndicator("Confidence", confidence, const Color(0xFF8B5CF6)),
             ],
           ),
         ],
