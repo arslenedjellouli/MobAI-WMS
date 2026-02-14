@@ -1,45 +1,22 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math' as math;
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:isar/isar.dart';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_commande_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_livraison_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_replenishment_item_collection.dart';
-import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/floor_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/section_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/slot_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/warehouse_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/zone_collection.dart';
-import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
 import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
-import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_history_logs_page.dart';
 import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
 import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
-import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 
 class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
@@ -49,11 +26,11 @@ class AdminDashboardPage extends StatefulWidget {
 }
 
 class _AdminDashboardPageState extends State<AdminDashboardPage> {
-    // AI metrics
-    double _validatedPercent = 0.0;
-    double _overriddenPercent = 0.0;
-    double _avgConfidence = 0.0;
-    double _avgAccuracy = 0.0;
+  // AI metrics
+  final double _validatedPercent = 0.0;
+  final double _overriddenPercent = 0.0;
+  final double _avgConfidence = 0.0;
+  final double _avgAccuracy = 0.0;
   final Isar _isar = sl<IsarDatabase>().isar;
   final ApiClient _apiClient = sl<ApiClient>();
   final SyncService _syncService = sl<SyncService>();
@@ -67,6 +44,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
   bool _isLoading = true;
   bool _isOnline = false;
+  StreamSubscription<NetworkStatus>? _connectivitySubscription;
 
   String _adminName = 'Administrator';
   String? _adminWarehouseId;
@@ -75,6 +53,21 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   void initState() {
     super.initState();
     _initializePage();
+    // Listen to connectivity changes
+    _connectivitySubscription = _connectivityService.networkStatusStream.listen(
+      (status) {
+        if (!mounted) return;
+        setState(() {
+          _isOnline = status == NetworkStatus.online;
+        });
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _initializePage() async {
@@ -93,11 +86,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    
+
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
@@ -122,10 +113,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              const SizedBox(
-                height: 180,
-                child: _AIMetricsSlider(),
-              ),
+              const SizedBox(height: 180, child: _AIMetricsSlider()),
               const SizedBox(height: 24),
 
               // 3. Actions Box
@@ -153,7 +141,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           width: 50,
           height: 50,
           decoration: BoxDecoration(
-            color: const Color(0xFF3B82F6), // Blue-500
+            color: const Color(0xFF3B82F6),
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
@@ -179,11 +167,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              "Welcome back, $name",
+              name,
               style: GoogleFonts.inter(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
-                color: const Color(0xFF0F172A), // Slate-900
+                color: const Color(0xFF0F172A),
               ),
             ),
             Text(
@@ -191,18 +179,57 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               style: GoogleFonts.inter(
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
-                color: const Color(0xFF64748B), // Slate-500
+                color: const Color(0xFF64748B),
               ),
             ),
           ],
         ),
         const Spacer(),
-        IconButton(
-          onPressed: () {
-            // TODO: Implement notifications
-          },
-          icon: const Icon(Icons.notifications_outlined),
-          color: const Color(0xFF64748B),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  onPressed: _isOnline ? _initializePage : null,
+                  icon: const Icon(Icons.sync, size: 20),
+                  color: const Color(0xFF64748B),
+                  tooltip: 'Sync',
+                ),
+                IconButton(
+                  onPressed: () {
+                    // Logout logic (navigate to login or call logout method)
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  },
+                  icon: const Icon(Icons.logout, size: 20, color: Colors.red),
+                  tooltip: 'Logout',
+                ),
+              ],
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _isOnline ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _isOnline ? 'Online' : 'Offline',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ],
     );
@@ -210,7 +237,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
   Widget _buildActionsGrid(BuildContext context) {
     // Shared color for all icons (Teal/Dark Cyan)
-    const Color iconColor = Color(0xFF00796B); 
+    const Color iconColor = Color(0xFF00796B);
 
     final actions = [
       _ActionItem(
@@ -265,9 +292,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         onTap: () {
           Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (context) => AdminMonitorPage(),
-            ),
+            MaterialPageRoute(builder: (context) => AdminMonitorPage()),
           );
         },
       ),
@@ -427,7 +452,9 @@ class _MetricsCard1 extends StatelessWidget {
                   height: 12,
                   decoration: const BoxDecoration(
                     color: Color(0xFF10B981), // Emerald-500
-                    borderRadius: BorderRadius.horizontal(left: Radius.circular(6)),
+                    borderRadius: BorderRadius.horizontal(
+                      left: Radius.circular(6),
+                    ),
                   ),
                 ),
               ),
@@ -437,7 +464,9 @@ class _MetricsCard1 extends StatelessWidget {
                   height: 12,
                   decoration: const BoxDecoration(
                     color: Color(0xFFEF4444), // Red-500
-                    borderRadius: BorderRadius.horizontal(right: Radius.circular(6)),
+                    borderRadius: BorderRadius.horizontal(
+                      right: Radius.circular(6),
+                    ),
                   ),
                 ),
               ),
@@ -532,9 +561,17 @@ class _MetricsCard2 extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildCircularIndicator("Accuracy", accuracy, const Color(0xFF3B82F6)),
+              _buildCircularIndicator(
+                "Accuracy",
+                accuracy,
+                const Color(0xFF3B82F6),
+              ),
               Container(width: 1, height: 60, color: const Color(0xFFE2E8F0)),
-              _buildCircularIndicator("Confidence", confidence, const Color(0xFF8B5CF6)),
+              _buildCircularIndicator(
+                "Confidence",
+                confidence,
+                const Color(0xFF8B5CF6),
+              ),
             ],
           ),
         ],
@@ -634,14 +671,16 @@ class _ActionCard extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: isCentered 
-                  ? CrossAxisAlignment.center 
+              crossAxisAlignment: isCentered
+                  ? CrossAxisAlignment.center
                   : CrossAxisAlignment.start,
               children: [
                 item.icon == Icons.receipt_long_outlined && isFullWidth
                     ? Icon(item.icon, color: item.color, size: 32)
                     : Container(
-                        padding: const EdgeInsets.all(10), // Slightly larger padding
+                        padding: const EdgeInsets.all(
+                          10,
+                        ), // Slightly larger padding
                         child: Icon(
                           item.icon,
                           color: item.color,
