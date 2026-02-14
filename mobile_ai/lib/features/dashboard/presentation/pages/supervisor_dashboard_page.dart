@@ -4138,6 +4138,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     String? syncNotes;
     String? syncAssigneeField;
     String? syncAssigneeId;
+    String? referenceDocumentId;
 
     await _isar.writeTxn(() async {
       switch (task.source) {
@@ -4148,7 +4149,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncAssigneeField = 'employee_id';
           syncAssigneeId = result.employeeId;
           entity.status = BonCommandeStatus.pending;
-          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          referenceDocumentId =
+              (entity.backendId ?? task.backendId ?? task.localId.toString())
+                  .trim();
+          entity.notes = _appendSupervisorNote(
+            _upsertChariotAssignmentNote(
+              entity.notes,
+              chariotId: result.chariotId,
+              chariotCode: result.chariotCode,
+              location: result.overrideLocationCode ?? task.zoneOrSlotValue,
+            ),
+            overrideNote,
+          );
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           syncStatus = 'PENDING';
@@ -4163,7 +4175,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncAssigneeField = 'employee_id';
           syncAssigneeId = result.employeeId;
           entity.status = BonReplenishmentStatus.pending;
-          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          referenceDocumentId =
+              (entity.backendId ?? task.backendId ?? task.localId.toString())
+                  .trim();
+          entity.notes = _appendSupervisorNote(
+            _upsertChariotAssignmentNote(
+              entity.notes,
+              chariotId: result.chariotId,
+              chariotCode: result.chariotCode,
+              location: result.overrideLocationCode ?? task.zoneOrSlotValue,
+            ),
+            overrideNote,
+          );
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           syncStatus = 'PENDING';
@@ -4176,7 +4199,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncAssigneeField = 'employee_id';
           syncAssigneeId = result.employeeId;
           entity.status = BonPickingStatus.pending;
-          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          referenceDocumentId =
+              (entity.backendId ?? task.backendId ?? task.localId.toString())
+                  .trim();
+          entity.notes = _appendSupervisorNote(
+            _upsertChariotAssignmentNote(
+              entity.notes,
+              chariotId: result.chariotId,
+              chariotCode: result.chariotCode,
+              location: result.overrideLocationCode ?? task.zoneOrSlotValue,
+            ),
+            overrideNote,
+          );
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           syncStatus = 'PENDING';
@@ -4189,7 +4223,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncAssigneeField = 'employee_id';
           syncAssigneeId = result.employeeId;
           entity.status = BonLivraisonStatus.idle;
-          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          referenceDocumentId =
+              (entity.backendId ?? task.backendId ?? task.localId.toString())
+                  .trim();
+          entity.notes = _appendSupervisorNote(
+            _upsertChariotAssignmentNote(
+              entity.notes,
+              chariotId: result.chariotId,
+              chariotCode: result.chariotCode,
+              location: result.overrideLocationCode ?? task.zoneOrSlotValue,
+            ),
+            overrideNote,
+          );
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           syncStatus = 'IDLE';
@@ -4202,7 +4247,21 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           syncAssigneeField = 'assigned_to_id';
           syncAssigneeId = result.employeeId;
           entity.status = EmployeeTaskStatus.pending;
-          entity.notes = _appendSupervisorNote(entity.notes, overrideNote);
+          referenceDocumentId =
+              (entity.bonReferenceId ??
+                      entity.backendId ??
+                      task.backendId ??
+                      task.localId.toString())
+                  .trim();
+          entity.notes = _appendSupervisorNote(
+            _upsertChariotAssignmentNote(
+              entity.notes,
+              chariotId: result.chariotId,
+              chariotCode: result.chariotCode,
+              location: result.overrideLocationCode ?? task.zoneOrSlotValue,
+            ),
+            overrideNote,
+          );
           entity.updatedAt = DateTime.now();
           entity.syncStatus = false;
           syncStatus = 'PENDING';
@@ -4210,6 +4269,15 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
           await _isar.employeeTaskCollections.put(entity);
       }
     });
+
+    if (referenceDocumentId != null && referenceDocumentId!.isNotEmpty) {
+      await _upsertChariotAssignmentForTask(
+        referenceDocumentId: referenceDocumentId!,
+        employeeId: result.employeeId,
+        taskType: task.type,
+        selectedChariotId: result.chariotId,
+      );
+    }
 
     await _enqueueTaskSync(
       task,
@@ -4612,15 +4680,18 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final user = await _isar.userCollections.where().findFirst();
     final report = await _isar.taskReportCollections.get(task.reportLocalId!);
     if (report == null) return;
+    final keepPending = selection.action == _ReportHandlingAction.setPending;
 
     String? syncStatus;
     String? syncNotes;
 
     await _isar.writeTxn(() async {
-      report.status = TaskReportStatus.resolved;
+      report.status = keepPending
+          ? TaskReportStatus.pending
+          : TaskReportStatus.resolved;
       report.supervisorId = user?.backendId ?? user?.id.toString();
       report.supervisorName = user?.fullName;
-      report.resolvedAt = DateTime.now();
+      report.resolvedAt = keepPending ? null : DateTime.now();
       report.supervisorNotes = selection.action.backendAction;
       report.updatedAt = DateTime.now();
       await _isar.taskReportCollections.put(report);
@@ -4706,7 +4777,9 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     await _sendReportHandlingToBackend(report, selection, task);
 
     setState(() {
-      _reportedTasks.remove(task);
+      if (!keepPending) {
+        _reportedTasks.remove(task);
+      }
       _syncReportedPageToFiltered();
     });
 
@@ -4902,12 +4975,24 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     _TaskCardData task,
   ) async {
     final assignmentOptions = await _loadEmployeeAssignmentOptions(task);
+    final chariotOptions = await _loadChariotAssignmentOptions();
 
     if (assignmentOptions.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('No employees available for assignment.'),
+          ),
+        );
+      }
+      return null;
+    }
+
+    if (chariotOptions.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No chariots available for assignment.'),
           ),
         );
       }
@@ -4921,6 +5006,7 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     _AIDecisionAction selectedAction = _AIDecisionAction.approve;
 
     String selectedEmployeeId = assignmentOptions.first.id;
+    String selectedChariotId = chariotOptions.first.id;
 
     return showDialog<_AIDecisionReviewResult>(
       context: context,
@@ -4975,6 +5061,33 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                         if (value == null) return;
                         setDialogState(() {
                           selectedEmployeeId = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: selectedChariotId,
+                      decoration: InputDecoration(
+                        labelText: 'Assign Chariot',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      items: chariotOptions
+                          .map(
+                            (chariot) => DropdownMenuItem<String>(
+                              value: chariot.id,
+                              child: Text(
+                                chariot.label,
+                                style: GoogleFonts.manrope(),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setDialogState(() {
+                          selectedChariotId = value;
                         });
                       },
                     ),
@@ -5119,6 +5232,10 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                     (candidate) => candidate.id == selectedEmployeeId,
                     orElse: () => assignmentOptions.first,
                   );
+                  final selectedChariot = chariotOptions.firstWhere(
+                    (candidate) => candidate.id == selectedChariotId,
+                    orElse: () => chariotOptions.first,
+                  );
 
                   String? overrideLocationCode;
                   Map<String, int> forecastPayload = const {};
@@ -5201,6 +5318,8 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
                       action: selectedAction,
                       employeeId: selectedEmployee.id,
                       employeeName: selectedEmployee.name,
+                      chariotId: selectedChariot.id,
+                      chariotCode: selectedChariot.code,
                       overrideLocationCode: overrideLocationCode,
                       forecastSkuCounts: forecastPayload,
                     ),
@@ -5320,6 +5439,180 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     return optionsById.values.toList();
   }
 
+  Future<List<_ChariotAssignmentOption>> _loadChariotAssignmentOptions() async {
+    final chariots = await _isar.chariotCollections.where().findAll();
+
+    final options = chariots
+        .where((chariot) => chariot.status != ChariotStatus.maintenance)
+        .map(
+          (chariot) => _ChariotAssignmentOption(
+            id: (chariot.backendId ?? chariot.id.toString()).trim(),
+            code: chariot.code,
+            label: '#${chariot.code} • ${chariot.name}',
+          ),
+        )
+        .where((option) => option.id.isNotEmpty)
+        .toList();
+
+    options.sort((a, b) => a.code.compareTo(b.code));
+    return options;
+  }
+
+  Future<void> _upsertChariotAssignmentForTask({
+    required String referenceDocumentId,
+    required String employeeId,
+    required TaskType taskType,
+    required String selectedChariotId,
+  }) async {
+    final normalizedReferenceId = referenceDocumentId.trim();
+    if (normalizedReferenceId.isEmpty) return;
+
+    String? queuedChariotBackendId;
+    String? queuedReferenceId;
+    String? queuedOperationType;
+
+    await _isar.writeTxn(() async {
+      final assignments = await _isar.chariotAssignmentCollections
+          .where()
+          .findAll();
+      final chariots = await _isar.chariotCollections.where().findAll();
+
+      final selectedChariot = chariots
+          .where(
+            (chariot) =>
+                chariot.id.toString() == selectedChariotId ||
+                (chariot.backendId?.trim().isNotEmpty == true &&
+                    chariot.backendId!.trim() == selectedChariotId),
+          )
+          .cast<ChariotCollection?>()
+          .firstWhere((value) => value != null, orElse: () => null);
+
+      final selectedAliases = <String>{selectedChariotId};
+      if (selectedChariot != null) {
+        selectedAliases.add(selectedChariot.id.toString());
+        if (selectedChariot.backendId != null &&
+            selectedChariot.backendId!.trim().isNotEmpty) {
+          selectedAliases.add(selectedChariot.backendId!.trim());
+        }
+      }
+
+      final now = DateTime.now();
+
+      for (final assignment in assignments) {
+        if (!assignment.isActive) continue;
+
+        final sameChariot = selectedAliases.contains(assignment.chariotId);
+        final sameReference =
+            assignment.referenceDocumentId?.trim() == normalizedReferenceId;
+
+        if ((sameChariot && !sameReference) ||
+            (sameReference && !sameChariot)) {
+          assignment.releasedAt = now;
+          assignment.syncStatus = false;
+          await _isar.chariotAssignmentCollections.put(assignment);
+        }
+      }
+
+      final existingActive = assignments
+          .where(
+            (assignment) =>
+                assignment.isActive &&
+                selectedAliases.contains(assignment.chariotId) &&
+                assignment.referenceDocumentId?.trim() == normalizedReferenceId,
+          )
+          .cast<ChariotAssignmentCollection?>()
+          .firstWhere((value) => value != null, orElse: () => null);
+
+      if (existingActive != null) {
+        existingActive.assignedToUserId = employeeId;
+        existingActive.operationType = _chariotOperationTypeForTask(taskType);
+        existingActive.assignedAt = now;
+        existingActive.syncStatus = false;
+        await _isar.chariotAssignmentCollections.put(existingActive);
+        return;
+      }
+
+      final assignment = ChariotAssignmentCollection.create(
+        chariotId: selectedChariot?.backendId?.trim().isNotEmpty == true
+            ? selectedChariot!.backendId!.trim()
+            : (selectedChariot?.id.toString() ?? selectedChariotId),
+        assignedToUserId: employeeId,
+        operationType: _chariotOperationTypeForTask(taskType),
+        referenceDocumentId: normalizedReferenceId,
+        assignedAt: now,
+      );
+      assignment.syncStatus = false;
+      await _isar.chariotAssignmentCollections.put(assignment);
+
+      final selectedBackendId = selectedChariot?.backendId?.trim();
+      if (selectedBackendId != null &&
+          selectedBackendId.isNotEmpty &&
+          _isLikelyUuid(selectedBackendId) &&
+          _isLikelyUuid(normalizedReferenceId)) {
+        queuedChariotBackendId = selectedBackendId;
+        queuedReferenceId = normalizedReferenceId;
+        queuedOperationType =
+            taskType == TaskType.picking ? 'PICKING' : 'REPLENISHMENT';
+      }
+    });
+
+    if (queuedChariotBackendId != null &&
+        queuedReferenceId != null &&
+        queuedOperationType != null) {
+      await _enqueueChariotAssignmentSync(
+        chariotBackendId: queuedChariotBackendId!,
+        referenceId: queuedReferenceId!,
+        operationType: queuedOperationType!,
+      );
+    }
+  }
+
+  Future<void> _enqueueChariotAssignmentSync({
+    required String chariotBackendId,
+    required String referenceId,
+    required String operationType,
+  }) async {
+    final payload = {
+      'chariot_id': chariotBackendId,
+      'reference_id': referenceId,
+      'operation_type': operationType,
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+
+    final queueItem = SyncQueueCollection.create(
+      queueId: _uuid.v4(),
+      operationType: SyncOperationType.pushChariotAssignment,
+      dataJson: jsonEncode(payload),
+      createdAt: DateTime.now(),
+      priority: 9,
+    );
+
+    await _isar.writeTxn(() async {
+      await _isar.syncQueueCollections.put(queueItem);
+    });
+  }
+
+  bool _isLikelyUuid(String value) {
+    final normalized = value.trim();
+    final regex = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
+    );
+    return regex.hasMatch(normalized);
+  }
+
+  ChariotOperationType _chariotOperationTypeForTask(TaskType type) {
+    switch (type) {
+      case TaskType.receipt:
+        return ChariotOperationType.receipt;
+      case TaskType.storage:
+        return ChariotOperationType.replenishment;
+      case TaskType.picking:
+        return ChariotOperationType.picking;
+      case TaskType.delivery:
+        return ChariotOperationType.delivery;
+    }
+  }
+
   _OverrideCategory _overrideCategoryForTask(TaskType taskType) {
     switch (taskType) {
       case TaskType.receipt:
@@ -5387,6 +5680,30 @@ class _SupervisorDashboardPageState extends State<SupervisorDashboardPage> {
     final current = (notes ?? '').trim();
     if (current.isEmpty) return marker;
     return '$current\n$marker';
+  }
+
+  String _upsertChariotAssignmentNote(
+    String? notes, {
+    required String chariotId,
+    required String chariotCode,
+    String? location,
+  }) {
+    final lines = (notes ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !line.startsWith('CHARIOT_ASSIGNMENT:'))
+        .toList();
+
+    final payload = <String, dynamic>{
+      'chariot_id': chariotId,
+      'chariot_code': chariotCode,
+      if (location != null && location.trim().isNotEmpty)
+        'location': location.trim(),
+    };
+
+    lines.add('CHARIOT_ASSIGNMENT:${jsonEncode(payload)}');
+    return lines.join('\n');
   }
 }
 
@@ -5482,6 +5799,8 @@ class _AIDecisionReviewResult {
     required this.action,
     required this.employeeId,
     required this.employeeName,
+    required this.chariotId,
+    required this.chariotCode,
     required this.forecastSkuCounts,
     this.overrideLocationCode,
   });
@@ -5489,6 +5808,8 @@ class _AIDecisionReviewResult {
   final _AIDecisionAction action;
   final String employeeId;
   final String employeeName;
+  final String chariotId;
+  final String chariotCode;
   final String? overrideLocationCode;
   final Map<String, int> forecastSkuCounts;
 }
@@ -5498,6 +5819,18 @@ class _EmployeeAssignmentOption {
 
   final String id;
   final String name;
+}
+
+class _ChariotAssignmentOption {
+  const _ChariotAssignmentOption({
+    required this.id,
+    required this.code,
+    required this.label,
+  });
+
+  final String id;
+  final String code;
+  final String label;
 }
 
 enum MonitorOrderFilter { all, pending, inProgress, complete, reported }

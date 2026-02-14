@@ -79,6 +79,7 @@ enum SyncOperationType {
   validateAIDecision,
   
   // Task operations
+  pushChariotAssignment,
   pushTaskReport,
   
   // Master data pull

@@ -17,6 +17,8 @@ import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart
 import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
 import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
+import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
 import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
 import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
@@ -114,6 +116,38 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
       developer.log('📋 Loaded ${employeeTasks.length} total employee tasks (no user filter)', name: 'EmployeeDashboard');
     }
 
+    final chariotAssignments = await _isar.chariotAssignmentCollections
+        .where()
+        .findAll();
+    final chariots = await _isar.chariotCollections.where().findAll();
+
+    final activeAssignmentByReference = <String, ChariotAssignmentCollection>{};
+    for (final assignment in chariotAssignments) {
+      if (!assignment.isActive) continue;
+      final referenceId = assignment.referenceDocumentId?.trim();
+      if (referenceId == null || referenceId.isEmpty) continue;
+
+      final existing = activeAssignmentByReference[referenceId];
+      if (existing == null || assignment.assignedAt.isAfter(existing.assignedAt)) {
+        activeAssignmentByReference[referenceId] = assignment;
+      }
+    }
+
+    final chariotByAlias = <String, ChariotCollection>{};
+    void addChariotAlias(String? alias, ChariotCollection chariot) {
+      final normalized = (alias ?? '').trim();
+      if (normalized.isEmpty) return;
+      chariotByAlias[normalized] = chariot;
+      chariotByAlias[normalized.toUpperCase()] = chariot;
+    }
+
+    for (final chariot in chariots) {
+      addChariotAlias(chariot.id.toString(), chariot);
+      addChariotAlias(chariot.backendId, chariot);
+      addChariotAlias(chariot.code, chariot);
+      addChariotAlias(chariot.name, chariot);
+    }
+
     final current = <_TaskCardData>[];
     final remaining = <_TaskCardData>[];
     final completed = <_TaskCardData>[];
@@ -135,7 +169,16 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in commandes) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromCommande(item, hasTaskReport(item.backendId));
+      final task = _withChariotContext(
+        _taskFromCommande(item, hasTaskReport(item.backendId)),
+        notes: item.notes,
+        referenceCandidates: [
+          if ((item.backendId ?? '').trim().isNotEmpty) item.backendId!.trim(),
+          item.id.toString(),
+        ],
+        activeAssignmentByReference: activeAssignmentByReference,
+        chariotByAlias: chariotByAlias,
+      );
       if (item.status == BonCommandeStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonCommandeStatus.completed) {
@@ -147,7 +190,16 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in replenish) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromReplenishment(item, hasTaskReport(item.backendId));
+      final task = _withChariotContext(
+        _taskFromReplenishment(item, hasTaskReport(item.backendId)),
+        notes: item.notes,
+        referenceCandidates: [
+          if ((item.backendId ?? '').trim().isNotEmpty) item.backendId!.trim(),
+          item.id.toString(),
+        ],
+        activeAssignmentByReference: activeAssignmentByReference,
+        chariotByAlias: chariotByAlias,
+      );
       if (item.status == BonReplenishmentStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonReplenishmentStatus.completed) {
@@ -159,7 +211,16 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in picking) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromPicking(item, hasTaskReport(item.backendId));
+      final task = _withChariotContext(
+        _taskFromPicking(item, hasTaskReport(item.backendId)),
+        notes: item.notes,
+        referenceCandidates: [
+          if ((item.backendId ?? '').trim().isNotEmpty) item.backendId!.trim(),
+          item.id.toString(),
+        ],
+        activeAssignmentByReference: activeAssignmentByReference,
+        chariotByAlias: chariotByAlias,
+      );
       if (item.status == BonPickingStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonPickingStatus.completed) {
@@ -171,7 +232,16 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
 
     for (final item in livraison) {
       if (!belongsToCurrentUser(item.employeeId)) continue;
-      final task = _taskFromLivraison(item, hasTaskReport(item.backendId));
+      final task = _withChariotContext(
+        _taskFromLivraison(item, hasTaskReport(item.backendId)),
+        notes: item.notes,
+        referenceCandidates: [
+          if ((item.backendId ?? '').trim().isNotEmpty) item.backendId!.trim(),
+          item.id.toString(),
+        ],
+        activeAssignmentByReference: activeAssignmentByReference,
+        chariotByAlias: chariotByAlias,
+      );
       if (item.status == BonLivraisonStatus.inProgress) {
         current.add(task);
       } else if (item.status == BonLivraisonStatus.done) {
@@ -189,7 +259,12 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
         developer.log('    ⚠️ Skipping - not assigned to current user', name: 'EmployeeDashboard');
         continue;
       }
-      final task = _taskFromEmployeeTask(item, hasTaskReport(item.backendId));
+      final task = _taskFromEmployeeTask(
+        item,
+        hasTaskReport(item.backendId),
+        activeAssignmentByReference: activeAssignmentByReference,
+        chariotByAlias: chariotByAlias,
+      );
       if (item.status == EmployeeTaskStatus.inProgress) {
         current.add(task);
       } else if (item.status == EmployeeTaskStatus.completed) {
@@ -371,8 +446,22 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     );
   }
 
-  _TaskCardData _taskFromEmployeeTask(EmployeeTaskCollection item, bool hasReport) {
+  _TaskCardData _taskFromEmployeeTask(
+    EmployeeTaskCollection item,
+    bool hasReport, {
+    required Map<String, ChariotAssignmentCollection> activeAssignmentByReference,
+    required Map<String, ChariotCollection> chariotByAlias,
+  }) {
     final taskType = _mapEmployeeTaskTypeToTaskType(item.taskType);
+
+    final referenceCandidates = _employeeTaskReferenceCandidates(item);
+    final chariotDisplayValue = _resolveChariotDisplayValue(
+      notes: item.notes,
+      referenceCandidates: referenceCandidates,
+      activeAssignmentByReference: activeAssignmentByReference,
+      chariotByAlias: chariotByAlias,
+    );
+
     return _TaskCardData(
       source: _TaskSource.employeeTask,
       localId: item.id,
@@ -385,11 +474,178 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
         type: taskType,
       ),
       floor: 'Warehouse ${item.warehouseId}',
-      zoneOrSlotLabel: 'Task',
-      zoneOrSlotValue: item.title,
+      zoneOrSlotLabel: chariotDisplayValue != null ? 'Location' : 'Task',
+      zoneOrSlotValue: chariotDisplayValue != null
+          ? chariotDisplayValue
+          : item.title,
       skuCount: item.itemsCount,
       hasReport: hasReport,
     );
+  }
+
+  _TaskCardData _withChariotContext(
+    _TaskCardData task, {
+    required String? notes,
+    required List<String> referenceCandidates,
+    required Map<String, ChariotAssignmentCollection> activeAssignmentByReference,
+    required Map<String, ChariotCollection> chariotByAlias,
+  }) {
+    final chariotDisplayValue = _resolveChariotDisplayValue(
+      notes: notes,
+      referenceCandidates: referenceCandidates,
+      activeAssignmentByReference: activeAssignmentByReference,
+      chariotByAlias: chariotByAlias,
+    );
+
+    if (chariotDisplayValue == null) return task;
+
+    return _TaskCardData(
+      source: task.source,
+      localId: task.localId,
+      backendId: task.backendId,
+      createdAt: task.createdAt,
+      type: task.type,
+      code: task.code,
+      floor: task.floor,
+      zoneOrSlotLabel: 'Location',
+      zoneOrSlotValue: chariotDisplayValue,
+      skuCount: task.skuCount,
+      hasReport: task.hasReport,
+    );
+  }
+
+  String? _resolveChariotDisplayValue({
+    required String? notes,
+    required List<String> referenceCandidates,
+    required Map<String, ChariotAssignmentCollection> activeAssignmentByReference,
+    required Map<String, ChariotCollection> chariotByAlias,
+  }) {
+    ChariotAssignmentCollection? linkedAssignment;
+    for (final referenceId in referenceCandidates) {
+      final assignment = activeAssignmentByReference[referenceId];
+      if (assignment != null) {
+        linkedAssignment = assignment;
+        break;
+      }
+    }
+
+    final chariotFromNotes = _extractChariotAssignmentFromNotes(notes);
+    final selectedChariotAlias =
+        (chariotFromNotes?['chariot_id'] ?? chariotFromNotes?['chariot_code'])
+            ?.toString()
+            .trim();
+
+    final assignedChariot = linkedAssignment != null
+        ? (chariotByAlias[linkedAssignment.chariotId.trim()] ??
+              chariotByAlias[linkedAssignment.chariotId.trim().toUpperCase()])
+        : null;
+    final hintedChariot = selectedChariotAlias != null && selectedChariotAlias.isNotEmpty
+        ? (chariotByAlias[selectedChariotAlias] ??
+              chariotByAlias[selectedChariotAlias.toUpperCase()])
+        : null;
+
+    final locationFromChariotNotes =
+        chariotFromNotes?['location']?.toString().trim();
+    final locationFromAiNotes = _extractLocationOverrideFromNotes(notes);
+    final resolvedLocation =
+        (locationFromChariotNotes != null && locationFromChariotNotes.isNotEmpty)
+            ? locationFromChariotNotes
+            : ((locationFromAiNotes != null && locationFromAiNotes.isNotEmpty)
+                  ? locationFromAiNotes
+                  : null);
+
+    final hasChariotContext =
+        linkedAssignment != null || assignedChariot != null || hintedChariot != null;
+    if (!hasChariotContext) return null;
+
+    final resolvedChariotCode =
+        chariotFromNotes?['chariot_code']?.toString().trim().isNotEmpty == true
+            ? chariotFromNotes!['chariot_code'].toString().trim()
+            : (assignedChariot?.code ?? hintedChariot?.code);
+
+    return [
+      if (resolvedChariotCode != null && resolvedChariotCode.isNotEmpty)
+        'Chariot $resolvedChariotCode',
+      (resolvedLocation != null && resolvedLocation.isNotEmpty)
+          ? resolvedLocation
+          : 'Location not set',
+    ].join(' • ');
+  }
+
+  List<String> _employeeTaskReferenceCandidates(EmployeeTaskCollection item) {
+    final values = <String>{
+      if ((item.bonReferenceId ?? '').trim().isNotEmpty)
+        item.bonReferenceId!.trim(),
+      if ((item.backendId ?? '').trim().isNotEmpty) item.backendId!.trim(),
+      item.id.toString(),
+    };
+    return values.toList();
+  }
+
+  Map<String, dynamic>? _extractChariotAssignmentFromNotes(String? notes) {
+    if (notes == null || notes.isEmpty) return null;
+
+    final line = notes
+        .split('\n')
+        .map((entry) => entry.trim())
+        .firstWhere(
+          (entry) => entry.startsWith('CHARIOT_ASSIGNMENT:'),
+          orElse: () => '',
+        );
+
+    if (line.isEmpty) return null;
+
+    final payload = line.replaceFirst('CHARIOT_ASSIGNMENT:', '').trim();
+    if (payload.isEmpty) return null;
+
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  String? _extractLocationOverrideFromNotes(String? notes) {
+    if (notes == null || notes.isEmpty) return null;
+
+    final locationOverrideLine = notes
+        .split('\n')
+        .map((entry) => entry.trim())
+        .firstWhere(
+          (entry) => entry.startsWith('LOCATION_OVERRIDE:'),
+          orElse: () => '',
+        );
+    if (locationOverrideLine.isNotEmpty) {
+      final location = locationOverrideLine.replaceFirst('LOCATION_OVERRIDE:', '').trim();
+      if (location.isNotEmpty) return location;
+    }
+
+    final aiTransferLine = notes
+        .split('\n')
+        .map((entry) => entry.trim())
+        .firstWhere(
+          (entry) => entry.startsWith('AI_TRANSFER_DECISION:'),
+          orElse: () => '',
+        );
+    if (aiTransferLine.isNotEmpty) {
+      final payload = aiTransferLine.replaceFirst('AI_TRANSFER_DECISION:', '').trim();
+      if (payload.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(payload);
+          if (decoded is Map<String, dynamic>) {
+            final location = decoded['location_code']?.toString().trim();
+            if (location != null && location.isNotEmpty) {
+              return location;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    return null;
   }
 
   TaskType _mapEmployeeTaskTypeToTaskType(EmployeeTaskType type) {
@@ -495,13 +751,17 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     // Call API to update status on backend
     try {
       if (task.backendId != null) {
-        await _apiClient.patch(
-          '/v1/operations/tasks/${task.backendId}/',
-          data: {
-            'status': 'IN_PROGRESS',
-            'started_at': DateTime.now().toIso8601String(),
-          },
-        );
+        if (task.source == _TaskSource.employeeTask) {
+          await _apiClient.post('/v1/operations/tasks/${task.backendId}/start/');
+        } else {
+          await _apiClient.patch(
+            '/v1/operations/tasks/${task.backendId}/',
+            data: {
+              'status': 'IN_PROGRESS',
+              'started_at': DateTime.now().toIso8601String(),
+            },
+          );
+        }
         developer.log('✓ Task ${task.backendId} status updated to IN_PROGRESS via API', name: 'TaskUpdate');
       }
     } catch (e) {
@@ -568,13 +828,17 @@ class _EmployeeDashboardPageState extends State<EmployeeDashboardPage> {
     // Call API to update status on backend
     try {
       if (task.backendId != null) {
-        await _apiClient.patch(
-          '/v1/operations/tasks/${task.backendId}/',
-          data: {
-            'status': 'COMPLETED',
-            'completed_at': DateTime.now().toIso8601String(),
-          },
-        );
+        if (task.source == _TaskSource.employeeTask) {
+          await _apiClient.post('/v1/operations/tasks/${task.backendId}/complete/');
+        } else {
+          await _apiClient.patch(
+            '/v1/operations/tasks/${task.backendId}/',
+            data: {
+              'status': 'COMPLETED',
+              'completed_at': DateTime.now().toIso8601String(),
+            },
+          );
+        }
         developer.log('✓ Task ${task.backendId} status updated to COMPLETED via API', name: 'TaskUpdate');
       }
     } catch (e) {

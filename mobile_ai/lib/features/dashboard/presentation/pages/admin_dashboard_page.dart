@@ -16,6 +16,7 @@ import 'package:mobile_ai/core/database/models/ai/ai_decision_collection.dart';
 import 'package:mobile_ai/core/database/models/ai/sku_forecast_collection.dart';
 
 class AdminDashboardPage extends StatefulWidget {
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
 
   @override
@@ -274,7 +275,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              "Welcome back, $name",
+              name,
               style: GoogleFonts.inter(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,

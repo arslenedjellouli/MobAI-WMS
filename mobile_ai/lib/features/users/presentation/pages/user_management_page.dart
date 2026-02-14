@@ -289,6 +289,15 @@ class _UserCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool isActive = user.status == 'ACTIVE';
     final Color statusColor = isActive ? const Color(0xFF10B981) : const Color(0xFFEF4444);
+    final String emailAlias = user.email.contains('@')
+      ? user.email.split('@').first.trim()
+      : user.email.trim();
+    final String displayName = user.fullName.trim().isNotEmpty
+      ? user.fullName.trim()
+      : emailAlias.isNotEmpty
+        ? emailAlias
+        : 'Unknown User';
+    final String avatarInitial = displayName.substring(0, 1).toUpperCase();
     final String roleName = user.role == 'SUPERVISOR' ? 'Supervisor' : 
                             user.role == 'ADMIN' ? 'Admin' : 'Employee';
 
@@ -318,7 +327,7 @@ class _UserCard extends StatelessWidget {
                 CircleAvatar(
                   backgroundColor: const Color(0xFFE0F2FE),
                   child: Text(
-                    user.fullName[0].toUpperCase(),
+                    avatarInitial,
                     style: GoogleFonts.inter(
                       fontWeight: FontWeight.bold,
                       color: const Color(0xFF0284C7),
@@ -331,7 +340,7 @@ class _UserCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        user.fullName,
+                        displayName,
                         style: GoogleFonts.inter(
                           fontWeight: FontWeight.w600,
                           fontSize: 16,
