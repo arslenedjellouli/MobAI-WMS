@@ -11,6 +11,8 @@ import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/auth/data/repositories/auth_repository_impl.dart';
+import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
@@ -44,6 +46,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
   bool _isLoading = true;
   bool _isOnline = false;
+  bool _isSyncing = false;
   StreamSubscription<NetworkStatus>? _connectivitySubscription;
 
   String _adminName = 'Administrator';
@@ -81,6 +84,88 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       _isOnline = isOnline;
       _isLoading = false;
     });
+  }
+
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Logout',
+          style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Are you sure you want to logout?',
+          style: GoogleFonts.manrope(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w600),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(
+              'Logout',
+              style: GoogleFonts.manrope(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    await sl<AuthRepository>().logout();
+    sl<NetworkService>().clearTokens();
+
+    // Navigate to login and clear stack
+    if (mounted) {
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        AppRoutes.login,
+        (route) => false,
+      );
+    }
+  }
+
+  Future<void> _triggerSync({bool showLoader = true}) async {
+    if (_isSyncing || !_isOnline) return;
+
+    if (mounted) {
+      setState(() {
+        _isSyncing = true;
+        if (showLoader) {
+          _isLoading = true;
+        }
+      });
+    }
+
+    try {
+      await _syncService.pushChanges();
+      await _syncService.pullChanges();
+      await _initializePage();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync failed. Please retry.')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -192,15 +277,24 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
-                  onPressed: _isOnline ? _initializePage : null,
-                  icon: const Icon(Icons.sync, size: 20),
+                  onPressed: _isOnline && !_isSyncing ? _triggerSync : null,
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(const Color(0xFF64748B)),
+                          ),
+                        )
+                      : const Icon(Icons.sync, size: 20),
                   color: const Color(0xFF64748B),
                   tooltip: 'Sync',
                 ),
                 IconButton(
                   onPressed: () {
                     // Logout logic (navigate to login or call logout method)
-                    Navigator.of(context).popUntil((route) => route.isFirst);
+                    _handleLogout();
                   },
                   icon: const Icon(Icons.logout, size: 20, color: Colors.red),
                   tooltip: 'Logout',
