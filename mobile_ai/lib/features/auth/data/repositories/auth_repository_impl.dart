@@ -45,15 +45,17 @@ class AuthRepositoryImpl implements AuthRepository {
         return Left(ServerFailure('Invalid response from server'));
       }
 
-      // 2. Always save Access Token to SecureStorage for current session
+      // 2. Always save Access Token and Role to SecureStorage for current session
       // This ensures API calls (like sync) work during the active session
       try {
         await storage.write(key: 'auth_token', value: token);
         if (refreshToken != null) {
           await storage.write(key: 'refresh_token', value: refreshToken);
         }
-        print('✅ [AuthRepository] Tokens saved to SecureStorage for current session');
-        
+        // Store the user's role as a string for splash navigation
+        final userRoleString = (userData['role'] as String?)?.toUpperCase() ?? 'EMPLOYEE';
+        await storage.write(key: 'user_role', value: userRoleString);
+        print('✅ [AuthRepository] Tokens and user role saved to SecureStorage for current session');
         // If rememberMe is false, mark tokens as session-only
         if (!rememberMe) {
           await storage.write(key: 'session_only', value: 'true');
@@ -63,7 +65,7 @@ class AuthRepositoryImpl implements AuthRepository {
           print('🔓 [AuthRepository] Session marked as persistent (Remember Me: enabled)');
         }
       } catch (e) {
-        print('⚠️ [AuthRepository] Failed to save tokens to SecureStorage: $e');
+        print('⚠️ [AuthRepository] Failed to save tokens/user role to SecureStorage: $e');
       }
 
       // 3. Create and Save User to Isar
@@ -154,7 +156,8 @@ class AuthRepositoryImpl implements AuthRepository {
       await storage.delete(key: 'auth_token');
       await storage.delete(key: 'refresh_token');
       await storage.delete(key: 'session_only');
-      print('🔓 [AuthRepository] Tokens and session flags cleared from SecureStorage');
+      await storage.delete(key: 'user_role');
+      print('🔓 [AuthRepository] Tokens, user role, and session flags cleared from SecureStorage');
       
       // Clear user data from Isar
       final isar = db.isar;

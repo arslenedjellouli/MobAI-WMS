@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_dashboard_page.dart';
 
 import 'package:mobile_ai/features/dashboard/presentation/pages/employee_dashboard_page.dart';
-import 'package:mobile_ai/features/auth/presentation/pages/splash_page.dart';
+import 'package:mobile_ai/splash_screen.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/login_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/access_help_page.dart';
 import 'package:mobile_ai/features/auth/presentation/pages/pin_locked_page.dart';
@@ -120,7 +120,7 @@ class AppRoutes {
     switch (settings.name) {
       case splash:
         return MaterialPageRoute(
-          builder: (_) => const SplashPage(),
+          builder: (_) => const SplashScreen(),
         );
 
       case login:
