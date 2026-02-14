@@ -1,42 +1,194 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:isar/isar.dart';
+import 'dart:async';
 
 import 'package:mobile_ai/config/di/injection_container.dart';
-import 'package:mobile_ai/core/api/api_client.dart';
 import 'package:mobile_ai/core/database/isar_database.dart';
 import 'package:mobile_ai/core/database/models/auth/user_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_commande_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_commande_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_livraison_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_livraison_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_picking_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_picking_item_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_replenishment_collection.dart';
-import 'package:mobile_ai/core/database/models/bons/bon_replenishment_item_collection.dart';
-import 'package:mobile_ai/core/database/models/inventory/sku_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/chariot_assignment_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/chariot_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/employee_task_collection.dart';
-import 'package:mobile_ai/core/database/models/operations/task_report_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/floor_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/location_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/section_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/slot_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/warehouse_collection.dart';
-import 'package:mobile_ai/core/database/models/warehouse/zone_collection.dart';
+import 'package:mobile_ai/core/database/models/sync/sync_metadata_collection.dart';
 import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/dashboard/presentation/pages/admin_history_logs_page.dart';
+import 'package:mobile_ai/core/database/models/ai/ai_decision_collection.dart';
+import 'package:mobile_ai/core/database/models/ai/sku_forecast_collection.dart';
 
-class AdminDashboardPage extends StatelessWidget {
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+    // AI metrics
+    double _validatedPercent = 0.0;
+    double _overriddenPercent = 0.0;
+    double _avgConfidence = 0.0;
+    double _avgAccuracy = 0.0;
+  final Isar _isar = sl<IsarDatabase>().isar;
+  final SyncService _syncService = sl<SyncService>();
+  final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final NetworkService _networkService = sl<NetworkService>();
+
+  bool _isLoading = true;
+  bool _isSyncing = false;
+  bool _isOnline = false;
+  String _adminName = 'Admin';
+  String _lastSync = 'Never';
+  
+  StreamSubscription<NetworkStatus>? _connectivitySubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+    _listenToConnectivity();
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+  void _listenToConnectivity() {
+    _connectivitySubscription = _connectivityService.networkStatusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          _isOnline = status == NetworkStatus.online;
+        });
+      }
+    });
+  }
+
+  Future<void> _bootstrap() async {
+    _isOnline = _connectivityService.isOnline;
     
+    // Load user info
+    final user = await _isar.userCollections.where().findFirst();
+    if (user != null) {
+      setState(() {
+        _adminName = user.fullName.split(' ').first;
+      });
+    }
+
+    // Load last sync
+    await _loadSyncMetadata();
+
+    // Load AI metrics
+    await _loadAIMetrics();
+
+    setState(() {
+      _isLoading = false;
+    });
+
+    // Trigger sync if online
+    if (_isOnline && mounted) {
+      await _triggerSync();
+    }
+  }
+
+  Future<void> _loadSyncMetadata() async {
+    final metadata = await _isar.syncMetadataCollections
+        .filter()
+        .entityTypeEqualTo('GLOBAL')
+        .findFirst();
+
+    if (metadata?.lastPullAt != null && mounted) {
+      setState(() {
+        _lastSync = _formatSyncDate(metadata!.lastPullAt!);
+      });
+    }
+  }
+
+  String _formatSyncDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+
+    if (diff.inSeconds < 60) return 'now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
+  Future<void> _triggerSync() async {
+    if (_isSyncing) return;
+
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      await _syncService.pushChanges();
+      await _syncService.pullChanges();
+      await _loadSyncMetadata();
+      await _loadAIMetrics();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadAIMetrics() async {
+    // Order Decisions: validated vs overridden
+    final decisions = await _isar.aIDecisionCollections.where().findAll();
+    final total = decisions.length;
+    final validated = decisions.where((d) => d.status == AIDecisionStatus.validated).length;
+    final overridden = decisions.where((d) => d.status == AIDecisionStatus.overridden).length;
+    _validatedPercent = total > 0 ? validated / total : 0.0;
+    _overriddenPercent = total > 0 ? overridden / total : 0.0;
+    _avgConfidence = total > 0 ? decisions.map((d) => d.confidenceScore).reduce((a, b) => a + b) / total : 0.0;
+
+    // Model Health: accuracy from SKUForecastCollection
+    final forecasts = await _isar.sKUForecastCollections.where().findAll();
+    final withActual = forecasts.where((f) => f.actualQuantity != null && f.actualQuantity != 0).toList();
+    _avgAccuracy = withActual.isNotEmpty
+        ? withActual.map((f) => f.accuracyPercent).reduce((a, b) => a + b) / withActual.length
+        : 0.0;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Logout', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      _networkService.clearTokens();
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, AppRoutes.login);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
@@ -244,11 +396,9 @@ class AdminDashboardPage extends StatelessWidget {
         label: "Review AI Orders",
         color: iconColor,
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const AdminReviewAiOrdersPage(),
-            ),
+          // TODO: Implement AdminReviewAiOrdersPage
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Review AI Orders - Coming soon')),
           );
         },
       ),
@@ -257,11 +407,9 @@ class AdminDashboardPage extends StatelessWidget {
         label: "Monitor Warehouses",
         color: iconColor,
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => AdminMonitorPage(),
-            ),
+          // TODO: Implement AdminMonitorPage
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Monitor Warehouses - Coming soon')),
           );
         },
       ),
@@ -290,7 +438,14 @@ class AdminDashboardPage extends StatelessWidget {
             icon: Icons.receipt_long_outlined,
             label: "Logs",
             color: iconColor,
-            onTap: () {},
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminHistoryLogsPage(),
+                ),
+              );
+            },
           ),
           isCentered: true,
           isFullWidth: true,
@@ -356,10 +511,9 @@ class _MetricsCard1 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Mock Data
-    final double validatedPercent = 0.85;
-    final int totalOrders = 1250;
-
+    final state = context.findAncestorStateOfType<_AdminDashboardPageState>();
+    final validatedPercent = state?._validatedPercent ?? 0.0;
+    final overriddenPercent = state?._overriddenPercent ?? 0.0;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 4),
       padding: const EdgeInsets.all(16),
@@ -395,7 +549,7 @@ class _MetricsCard1 extends StatelessWidget {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  "+12% vs last week",
+                  "${((validatedPercent - overriddenPercent) * 100).toStringAsFixed(1)}% diff",
                   style: GoogleFonts.inter(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
@@ -420,7 +574,7 @@ class _MetricsCard1 extends StatelessWidget {
                 ),
               ),
               Expanded(
-                flex: ((1 - validatedPercent) * 100).toInt(),
+                flex: (overriddenPercent * 100).toInt(),
                 child: Container(
                   height: 12,
                   decoration: const BoxDecoration(
@@ -439,7 +593,7 @@ class _MetricsCard1 extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    "${(validatedPercent * 100).toInt()}%",
+                    "${(validatedPercent * 100).toStringAsFixed(1)}%",
                     style: GoogleFonts.inter(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -455,11 +609,11 @@ class _MetricsCard1 extends StatelessWidget {
                   ),
                 ],
               ),
-               Column(
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    "${((1 - validatedPercent) * 100).toInt()}%",
+                    "${(overriddenPercent * 100).toStringAsFixed(1)}%",
                     style: GoogleFonts.inter(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -488,6 +642,9 @@ class _MetricsCard2 extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = context.findAncestorStateOfType<_AdminDashboardPageState>();
+    final accuracy = state?._avgAccuracy ?? 0.0;
+    final confidence = state?._avgConfidence ?? 0.0;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 4),
       padding: const EdgeInsets.all(16),
@@ -517,9 +674,9 @@ class _MetricsCard2 extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildCircularIndicator("Accuracy", 0.92, const Color(0xFF3B82F6)),
+              _buildCircularIndicator("Accuracy", accuracy, const Color(0xFF3B82F6)),
               Container(width: 1, height: 60, color: const Color(0xFFE2E8F0)),
-              _buildCircularIndicator("Confidence", 0.88, const Color(0xFF8B5CF6)),
+              _buildCircularIndicator("Confidence", confidence, const Color(0xFF8B5CF6)),
             ],
           ),
         ],
