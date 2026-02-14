@@ -1,3 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:isar/isar.dart';
@@ -31,6 +36,9 @@ import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/datasources/warehouse_remote_datasource.dart';
+import 'package:mobile_ai/features/warehouse/data/models/warehouse_api_models.dart';
 
 class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
@@ -41,13 +49,23 @@ class AdminDashboardPage extends StatefulWidget {
 
 class _AdminDashboardPageState extends State<AdminDashboardPage> {
   final Isar _isar = sl<IsarDatabase>().isar;
+  final ApiClient _apiClient = sl<ApiClient>();
+  final SyncService _syncService = sl<SyncService>();
   final ConnectivityService _connectivityService = sl<ConnectivityService>();
+  final FloorRemoteDatasource _floorRemoteDatasource =
+      FloorRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+  final WarehouseRemoteDatasource _warehouseRemoteDatasource =
+      WarehouseRemoteDatasourceImpl(apiClient: sl<ApiClient>());
+  final ChariotRemoteDatasource _chariotRemoteDatasource =
+      ChariotRemoteDatasourceImpl(apiClient: sl<ApiClient>());
 
   bool _isLoading = true;
   bool _isSyncing = false;
   bool _isOnline = false;
   String _lastSync = 'Never';
   String _adminName = 'Administrator';
+  String? _adminWarehouseId;
+  String? _adminWarehouseId;
 
   @override
   void initState() {
