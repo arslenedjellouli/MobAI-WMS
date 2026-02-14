@@ -34,6 +34,8 @@ import 'package:mobile_ai/core/network/network_service.dart';
 import 'package:mobile_ai/core/services/connectivity_service.dart';
 import 'package:mobile_ai/core/services/sync_service.dart';
 import 'package:mobile_ai/config/routes/app_routes.dart';
+import 'package:mobile_ai/features/chariots/data/datasources/chariot_remote_datasource.dart';
+import 'package:mobile_ai/features/chariots/data/models/chariot_api_models.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_monitor_page.dart';
 import 'package:mobile_ai/features/dashboard/presentation/pages/admin_review_ai_orders_page.dart';
 import 'package:mobile_ai/features/warehouse/data/datasources/floor_remote_datasource.dart';
@@ -60,11 +62,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       ChariotRemoteDatasourceImpl(apiClient: sl<ApiClient>());
 
   bool _isLoading = true;
-  bool _isSyncing = false;
   bool _isOnline = false;
-  String _lastSync = 'Never';
+
   String _adminName = 'Administrator';
-  String? _adminWarehouseId;
   String? _adminWarehouseId;
 
   @override
@@ -80,32 +80,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     if (!mounted) return;
     setState(() {
       _adminName = user?.fullName ?? 'Administrator';
+      _adminWarehouseId = user?.warehouseId;
       _isOnline = isOnline;
       _isLoading = false;
     });
-  }
-
-  Future<void> _triggerSync() async {
-    if (_isSyncing) return;
-    setState(() => _isSyncing = true);
-
-    final isOnline = await _connectivityService.checkConnection();
-
-    if (!mounted) return;
-    setState(() {
-      _isOnline = isOnline;
-      if (isOnline) {
-        final now = DateTime.now();
-        final h = now.hour.toString().padLeft(2, '0');
-        final m = now.minute.toString().padLeft(2, '0');
-        _lastSync = '$h:$m';
-      }
-      _isSyncing = false;
-    });
-  }
-
-  void _handleLogout() {
-    Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
   }
 
   @override
