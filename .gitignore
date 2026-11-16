@@ -1,0 +1,29 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE settings
+.idea/
+*.iml
+.vscode/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Flutter/Dart generated files
+mobile_ai/.dart_tool/
+mobile_ai/.flutter-plugins
+mobile_ai/.flutter-plugins-dependencies
+mobile_ai/.pub-cache/
+mobile_ai/build/
+mobile_ai/coverage/
+mobile_ai/isar.dll
+
+# Generated platform build output
+mobile_ai/android/.gradle/
+mobile_ai/android/app/build/
+mobile_ai/ios/Pods/
+mobile_ai/macos/Pods/

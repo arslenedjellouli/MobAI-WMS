@@ -49,9 +49,7 @@ void main() async {
       print('\n✅ Database cleared successfully!');
     }
     
-    print('\n✨ You can now login with the supervisor account:');
-    print('   Email: supervisor@warehouse.local');
-    print('   Password: supervisor123');
+    print('\n✨ You can now log in with the supervisor account configured by the backend.');
     
     exit(0);
   } catch (e) {
